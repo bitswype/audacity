@@ -2283,31 +2283,69 @@ bool AudioIO::ProcessPlaybackSlices(
                         samplesAvailable, 0);
                 }
             } else if (numChannels == 1) {
-                float maxVolume = 0.0f;
+                // When output channels > 2 and this mono track's index
+                // maps to a specific output channel, route it there directly
+                // instead of duplicating to all outputs (identity routing).
+                // This is a temporary routing strategy for multi-channel output.
+                // For stereo output (mNumPlaybackChannels <= 2), preserve the
+                // original behavior of duplicating mono to all outputs with panning.
+                const bool useIdentityRouting =
+                    mNumPlaybackChannels > 2 && bufferIndex < mNumPlaybackChannels;
 
-                for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
-                    maxVolume = std::max(maxVolume, seq->GetChannelVolume(n));
-                }
-
-                // Mix mono source is duplicated into every output channel
-                // accounting for panning
-                for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
-                    const float volume = seq->GetChannelVolume(n);
+                if (useIdentityRouting) {
+                    const unsigned targetChannel = bufferIndex;
+                    const float volume = seq->GetChannelVolume(0);
                     for (unsigned i = 0; i < samplesAvailable; ++i) {
-                        mMasterBuffers[n][i] += mProcessingBuffers[bufferIndex][i] * volume;
+                        mMasterBuffers[targetChannel][i] +=
+                            mProcessingBuffers[bufferIndex][i] * volume;
                     }
-                }
 
-                for (unsigned i = 0; i < samplesAvailable; ++i) {
-                    mProcessingBuffers[bufferIndex][i] *= maxVolume;
-                }
+                    for (unsigned i = 0; i < samplesAvailable; ++i) {
+                        mProcessingBuffers[bufferIndex][i] *= volume;
+                    }
 
-                for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
-                    //Copy per track data to ring buffers
-                    buffers[n]->Put(
+                    // Only put data into the target channel's ring buffer
+                    buffers[targetChannel]->Put(
                         reinterpret_cast<constSamplePtr>(mProcessingBuffers[bufferIndex].data()),
                         floatSample,
                         samplesAvailable, 0);
+
+                    // Put silence into the other per-track ring buffers
+                    // so they don't underrun
+                    std::vector<float> silence(samplesAvailable, 0.0f);
+                    for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
+                        if (n != targetChannel) {
+                            buffers[n]->Put(
+                                reinterpret_cast<constSamplePtr>(silence.data()),
+                                floatSample,
+                                samplesAvailable, 0);
+                        }
+                    }
+                } else {
+                    // Original stereo behavior: duplicate mono to all outputs
+                    float maxVolume = 0.0f;
+
+                    for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
+                        maxVolume = std::max(maxVolume, seq->GetChannelVolume(n));
+                    }
+
+                    for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
+                        const float volume = seq->GetChannelVolume(n);
+                        for (unsigned i = 0; i < samplesAvailable; ++i) {
+                            mMasterBuffers[n][i] += mProcessingBuffers[bufferIndex][i] * volume;
+                        }
+                    }
+
+                    for (unsigned i = 0; i < samplesAvailable; ++i) {
+                        mProcessingBuffers[bufferIndex][i] *= maxVolume;
+                    }
+
+                    for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
+                        buffers[n]->Put(
+                            reinterpret_cast<constSamplePtr>(mProcessingBuffers[bufferIndex].data()),
+                            floatSample,
+                            samplesAvailable, 0);
+                    }
                 }
             }
             bufferIndex += seq->NChannels();
