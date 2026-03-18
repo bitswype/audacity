@@ -159,10 +159,13 @@ public:
         };
     }
 
-    static constexpr size_t MaxPlaybackChannels = 2;
+    // Maximum output channels supported. Was hardcoded to 2 (stereo).
+    // Now supports multi-channel playback up to the device's capability.
+    // The per-track ring buffers are dynamically sized to mNumPlaybackChannels,
+    // which is set once in StartStream and is invariant during playback.
     struct Track {
         std::shared_ptr<const PlayableSequence> mSequence;
-        std::array<std::unique_ptr<RingBuffer>, MaxPlaybackChannels> mBuffers;
+        std::vector<std::unique_ptr<RingBuffer>> mBuffers;
 
         Track(std::shared_ptr<const PlayableSequence> sequence);
         ~Track();

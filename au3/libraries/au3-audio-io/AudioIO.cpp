@@ -561,6 +561,11 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
         // regardless of source formats, we always mix to float
         playbackParameters.sampleFormat = paFloat32;
         playbackParameters.hostApiSpecificStreamInfo = NULL;
+
+        // Clamp requested channel count to device capability
+        if (mNumPlaybackChannels > static_cast<size_t>(playbackDeviceInfo->maxOutputChannels)) {
+            mNumPlaybackChannels = playbackDeviceInfo->maxOutputChannels;
+        }
         playbackParameters.channelCount = mNumPlaybackChannels;
 
         const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(playbackDeviceInfo->hostApi);
@@ -857,7 +862,7 @@ void AudioIO::StartMonitoring(const AudioIOStartStreamOptions& options)
     int playbackChannels = 0;
 
     if (mSoftwarePlaythrough) {
-        playbackChannels = 2;
+        playbackChannels = std::max(1, AudioIOPlaybackChannels.Read());
     }
 
     // FIXME: TRAP_ERR StartPortAudioStream (a PaError may be present)
@@ -1037,11 +1042,14 @@ int AudioIO::StartStream(const TransportSequences& sequences,
 
     if (sequences.playbackSequences.size() > 0
         || sequences.otherPlayableSequences.size() > 0) {
-        playbackChannels = 2;
+        // Use the configured playback channel count (default: 2 for stereo).
+        // Clamped to the device's actual capability in StartPortAudioStream.
+        playbackChannels = std::max(1, AudioIOPlaybackChannels.Read());
     }
 
     if (mSoftwarePlaythrough) {
-        playbackChannels = 2;
+        playbackChannels = std::max(playbackChannels,
+            static_cast<unsigned int>(std::max(1, AudioIOPlaybackChannels.Read())));
     }
 
     if (mCaptureSequences.size() > 0) {
@@ -1438,9 +1446,8 @@ bool AudioIO::AllocateBuffers(
             const size_t playbackBufferSize = std::max((size_t)lrint(
                                                            mRate * mPlaybackRingBufferSecs.count()), mHardwarePlaybackLatencyFrames * 2);
             for (auto& track : mPlaybackTracks) {
-                for (auto& buffer : track.mBuffers) {
-                    buffer.reset();
-                }
+                track.mBuffers.clear();
+                track.mBuffers.resize(mNumPlaybackChannels);
 
                 for (size_t i = 0; i < mNumPlaybackChannels; ++i) {
                     track.mBuffers[i] = std::make_unique<RingBuffer>(
@@ -2676,19 +2683,27 @@ static void DoSoftwarePlaythrough(constSamplePtr inputBuffer,
                                   sampleFormat inputFormat,
                                   unsigned inputChannels,
                                   float* outputBuffer,
-                                  unsigned long len)
+                                  unsigned long len,
+                                  unsigned outputChannels)
 {
-    for (unsigned int i=0; i < inputChannels; i++) {
+    // Write input channels into the interleaved output buffer,
+    // using the actual output channel stride (not hardcoded to 2).
+    const auto channelsToWrite = std::min(inputChannels, outputChannels);
+    for (unsigned int i = 0; i < channelsToWrite; i++) {
         auto inputPtr = inputBuffer + (i * SAMPLE_SIZE(inputFormat));
 
         SamplesToFloats(inputPtr, inputFormat,
-                        outputBuffer + i, len, inputChannels, 2);
+                        outputBuffer + i, len,
+                        inputChannels, outputChannels);
     }
 
-    // One mono input channel goes to both output channels...
+    // One mono input channel goes to all output channels...
     if (inputChannels == 1) {
-        for (int i=0; i < len; i++) {
-            outputBuffer[2 * i + 1] = outputBuffer[2 * i];
+        for (unsigned n = 1; n < outputChannels; n++) {
+            for (unsigned long i = 0; i < len; i++) {
+                outputBuffer[outputChannels * i + n] =
+                    outputBuffer[outputChannels * i];
+            }
         }
     }
 }
@@ -3108,7 +3123,8 @@ void AudioIoCallback::DoPlaythrough(
     if (inputBuffer && mSoftwarePlaythrough) {
         DoSoftwarePlaythrough(inputBuffer, mCaptureFormat,
                               numCaptureChannels,
-                              outputBuffer, framesPerBuffer);
+                              outputBuffer, framesPerBuffer,
+                              numPlaybackChannels);
     }
 
     // Copy the results to outputMeterFloats if necessary
@@ -3220,7 +3236,13 @@ void AudioIoCallback::PushTrackMeterValues(const IMeterSenderPtr& sender, unsign
     auto stackBuffer = stackAllocate(float, frames);
 
     for (const Track& track: mPlaybackTracks) {
-        const auto nChannels = track.mSequence->NChannels();
+        // Clamp to the number of per-track ring buffers actually allocated
+        // (mBuffers is sized to mNumPlaybackChannels, which may be less than
+        // the sequence's channel count when playing multi-channel tracks
+        // through a device with fewer output channels).
+        const auto nChannels = std::min(
+            track.mSequence->NChannels(),
+            track.mBuffers.size());
         for (size_t nch = 0; nch < nChannels; ++nch) {
             const auto& buffer = track.mBuffers[nch];
             size_t len = buffer->Get(

@@ -1063,6 +1063,8 @@ StringSetting AudioIOPlaybackSource{
     L"/AudioIO/PlaybackSource", L"" };
 DoubleSetting AudioIOPlaybackVolume {
     L"/AudioIO/PlaybackVolume", 1.0 };
+IntSetting AudioIOPlaybackChannels{
+    L"/AudioIO/PlaybackChannels", 2 };
 IntSetting AudioIORecordChannels{
     L"/AudioIO/RecordChannels", 2 };
 StringSetting AudioIORecordingDevice{
