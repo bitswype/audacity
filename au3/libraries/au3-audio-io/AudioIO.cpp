@@ -1378,6 +1378,10 @@ bool AudioIO::AllocateBuffers(
                             mCallbackTempBuffers[c].resize(playbackBufferSize, 0.0f);
                             mCallbackTempPointers[c] = mCallbackTempBuffers[c].data();
                         }
+
+                        // Pre-allocated zero buffer for identity routing.
+                        // Avoids per-track heap allocation on audio feeder thread.
+                        mSilenceBuffer.assign(playbackBufferSize, 0.0f);
                     }
                 }
 
@@ -2322,12 +2326,12 @@ bool AudioIO::ProcessPlaybackSlices(
                         samplesAvailable, 0);
 
                     // Put silence into the other per-track ring buffers
-                    // so they don't underrun
-                    std::vector<float> silence(samplesAvailable, 0.0f);
+                    // so they don't underrun.
+                    // Uses pre-allocated mSilenceBuffer (no heap allocation).
                     for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
                         if (n != targetChannel) {
                             buffers[n]->Put(
-                                reinterpret_cast<constSamplePtr>(silence.data()),
+                                reinterpret_cast<constSamplePtr>(mSilenceBuffer.data()),
                                 floatSample,
                                 samplesAvailable, 0);
                         }

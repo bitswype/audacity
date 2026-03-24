@@ -269,6 +269,10 @@ public:
     std::vector<std::vector<float>> mCallbackTempBuffers;
     std::vector<float*> mCallbackTempPointers;
 
+    // Pre-allocated zero buffer for identity routing silence fill.
+    // Avoids heap allocation on the audio feeder thread.
+    std::vector<float> mSilenceBuffer;
+
     std::vector<std::unique_ptr<Mixer> > mPlaybackMixers;
 
     std::atomic<float> mMixerOutputVol{ 1.0 };
