@@ -15,6 +15,7 @@
 
 #include "au3-audio-devices/AudioIOBase.h" // to inherit
 #include "au3-mixer/AudioIOSequences.h"
+#include "au3-mixer/ChannelRouting.h"
 #include "PlaybackSchedule.h" // member variable
 #include "RingBuffer.h"
 #include "au3-utility/LockFreeQueue.h"
@@ -272,6 +273,10 @@ public:
     // Pre-allocated zero buffer for identity routing silence fill.
     // Avoids heap allocation on the audio feeder thread.
     std::vector<float> mSilenceBuffer;
+
+    // Per-track output channel assignments, computed in AllocateBuffers.
+    // See ChannelRouting.h for the routing rules.
+    std::vector<TrackChannelAssignment> mTrackChannelAssignments;
 
     std::vector<std::unique_ptr<Mixer> > mPlaybackMixers;
 
