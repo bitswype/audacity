@@ -63,6 +63,17 @@ def play_and_capture(device, play_file, capture_file, num_channels,
     ]
     subprocess.run(play_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
+    # Play a short silence to flush the device's output buffer.
+    # Without this, the device loops the last USB transfer buffer
+    # indefinitely after playback stops (observed on UAC2 devices).
+    silence_file = play_file + '.silence.wav'
+    if not os.path.exists(silence_file):
+        silence = np.zeros((sample_rate, num_channels), dtype=np.float64)
+        sf.write(silence_file, silence, sample_rate, subtype='PCM_32')
+    subprocess.run(
+        ['aplay', '-D', device, silence_file],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
     # Wait for capture to finish
     capture_proc.wait()
 
@@ -77,10 +88,19 @@ def analyze_capture(capture_file, expected_freqs, sample_rate,
 
     num_channels = min(data.shape[1], len(expected_freqs))
 
-    # Use the middle of the capture to avoid start/end transients
-    start = max(0, data.shape[0] // 2 - 4096)
+    # Find the region with the strongest signal on channel 0
+    # by looking for the block with highest RMS
+    block_size = 8192
+    best_rms = 0
+    best_start = 0
+    for pos in range(0, data.shape[0] - block_size, block_size):
+        rms = np.sqrt(np.mean(data[pos:pos + block_size, 0]**2))
+        if rms > best_rms:
+            best_rms = rms
+            best_start = pos
+    start = best_start
 
-    if start + 8192 > data.shape[0]:
+    if start + block_size > data.shape[0]:
         print("ERROR: Not enough audio data captured")
         return []
 
