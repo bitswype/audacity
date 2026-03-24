@@ -1367,6 +1367,17 @@ bool AudioIO::AllocateBuffers(
                             mScratchPointers.push_back(
                                 reinterpret_cast<float*>(buffer.ptr()));
                         }
+
+                        // Pre-allocate callback temp buffers on the heap.
+                        // Replaces stackAllocate (alloca) in FillOutputBuffers
+                        // which overflows the stack at high channel counts
+                        // (~100KB at 8ch, ~1.5MB at 32ch).
+                        mCallbackTempBuffers.resize(mNumPlaybackChannels);
+                        mCallbackTempPointers.resize(mNumPlaybackChannels);
+                        for (size_t c = 0; c < mNumPlaybackChannels; ++c) {
+                            mCallbackTempBuffers[c].resize(playbackBufferSize, 0.0f);
+                            mCallbackTempPointers[c] = mCallbackTempBuffers[c].data();
+                        }
                     }
                 }
 
@@ -2859,13 +2870,10 @@ bool AudioIoCallback::FillOutputBuffers(
     // is very cheap to process.
 
     // ------ MEMORY ALLOCATION ----------------------
-    // These are small structures.
-    const auto tempBufs = stackAllocate(float*, numPlaybackChannels);
-
-    // And these are larger structures....
-    for (unsigned int c = 0; c < numPlaybackChannels; c++) {
-        tempBufs[c] = stackAllocate(float, framesPerBuffer);
-    }
+    // Use pre-allocated heap buffers instead of stackAllocate (alloca).
+    // At high channel counts, alloca would overflow the callback thread
+    // stack (~512KB on macOS, ~1MB on Windows).
+    const auto tempBufs = mCallbackTempPointers.data();
     // ------ End of MEMORY ALLOCATION ---------------
 
     auto playbackVolume = GetMixerOutputVol();

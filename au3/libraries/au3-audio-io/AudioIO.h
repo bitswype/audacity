@@ -263,6 +263,12 @@ public:
     std::vector<SampleBuffer> mScratchBuffers;
     std::vector<float*> mScratchPointers; //!< pointing into mScratchBuffers
 
+    // Pre-allocated buffers for the PortAudio callback thread.
+    // Replaces stackAllocate (alloca) which overflows at high channel counts.
+    // Sized to mNumPlaybackChannels * framesPerBuffer in AllocateBuffers.
+    std::vector<std::vector<float>> mCallbackTempBuffers;
+    std::vector<float*> mCallbackTempPointers;
+
     std::vector<std::unique_ptr<Mixer> > mPlaybackMixers;
 
     std::atomic<float> mMixerOutputVol{ 1.0 };
