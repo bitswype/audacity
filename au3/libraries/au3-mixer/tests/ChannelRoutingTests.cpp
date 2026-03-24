@@ -37,6 +37,17 @@ TEST(ChannelRouting, MonoOutput_AllTracksGetLegacy)
       EXPECT_EQ(a.outputChannel, -1);
 }
 
+TEST(ChannelRouting, ThreeOutput_ThreeMonoTracks_IdentityRouting)
+{
+   // 3 outputs is the boundary -- first multi-channel case (>2)
+   auto assignments = ComputeChannelAssignments({1, 1, 1}, 3);
+
+   ASSERT_EQ(assignments.size(), 3u);
+   EXPECT_EQ(assignments[0].outputChannel, 0);
+   EXPECT_EQ(assignments[1].outputChannel, 1);
+   EXPECT_EQ(assignments[2].outputChannel, 2);
+}
+
 TEST(ChannelRouting, StereoOutput_StereoTrack_Legacy)
 {
    auto assignments = ComputeChannelAssignments({2}, 2);
