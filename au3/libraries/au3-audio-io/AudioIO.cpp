@@ -1382,6 +1382,16 @@ bool AudioIO::AllocateBuffers(
                         // Pre-allocated zero buffer for identity routing.
                         // Avoids per-track heap allocation on audio feeder thread.
                         mSilenceBuffer.assign(playbackBufferSize, 0.0f);
+
+                        // Pre-allocated scratch buffers for AudioCallback.
+                        // Replaces stackAllocate (alloca) which overflows
+                        // the callback thread stack at high channel counts.
+                        const auto maxChannels = std::max(
+                            mNumPlaybackChannels, mNumCaptureChannels);
+                        mCallbackScratchBuffer.resize(
+                            playbackBufferSize * maxChannels, 0.0f);
+                        mCallbackMeterBuffer.resize(
+                            playbackBufferSize * mNumPlaybackChannels, 0.0f);
                     }
                 }
 
@@ -1542,6 +1552,12 @@ void AudioIO::StartStreamCleanup(bool bOnlyBuffers)
     mPlaybackTracks.clear();
     mScratchBuffers.clear();
     mScratchPointers.clear();
+    mCallbackTempBuffers.clear();
+    mCallbackTempPointers.clear();
+    mCallbackScratchBuffer.clear();
+    mCallbackMeterBuffer.clear();
+    mSilenceBuffer.clear();
+    mTrackChannelAssignments.clear();
     mPlaybackMixers.clear();
     mCaptureBuffers.clear();
     mResample.clear();
@@ -2332,7 +2348,8 @@ bool AudioIO::ProcessPlaybackSlices(
                 }
             } else if (numChannels > 1 && assignedOutput < 0) {
                 // Multi-channel track, legacy routing (stereo)
-                for (unsigned n = 0, cnt = std::min(numChannels, mNumPlaybackChannels); n < cnt; ++n) {
+                const auto cnt = std::min(numChannels, mNumPlaybackChannels);
+                for (unsigned n = 0; n < cnt; ++n) {
                     const float volume = seq->GetChannelVolume(n);
                     for (unsigned i = 0; i < samplesAvailable; ++i) {
                         mProcessingBuffers[bufferIndex + n][i] *= volume;
@@ -2342,6 +2359,13 @@ bool AudioIO::ProcessPlaybackSlices(
                     buffers[n]->Put(
                         reinterpret_cast<constSamplePtr>(
                             mProcessingBuffers[bufferIndex + n].data()),
+                        floatSample, samplesAvailable, 0);
+                }
+                // Fill silence into per-track ring buffers beyond the track's
+                // channel count to prevent ring buffer desync at Unput time.
+                for (unsigned n = cnt; n < mNumPlaybackChannels; ++n) {
+                    buffers[n]->Put(
+                        reinterpret_cast<constSamplePtr>(mSilenceBuffer.data()),
                         floatSample, samplesAvailable, 0);
                 }
             } else if (numChannels == 1 && assignedOutput >= 0) {
@@ -3423,8 +3447,9 @@ int AudioIoCallback::AudioCallback(
     // audio data.  One temporary use is for the InputMeter data.
     const auto numPlaybackChannels = mNumPlaybackChannels;
     const auto numCaptureChannels = mNumCaptureChannels;
-    const auto tempFloats = stackAllocate(float,
-                                          framesPerBuffer * std::max(numCaptureChannels, numPlaybackChannels));
+    // Use pre-allocated heap buffers instead of stackAllocate (alloca).
+    // At high channel counts, alloca would overflow the callback thread stack.
+    const auto tempFloats = mCallbackScratchBuffer.data();
 
     bool bVolEmulationActive
         =(outputBuffer && GetMixerOutputVol() != 1.0);
@@ -3432,7 +3457,7 @@ int AudioIoCallback::AudioCallback(
     // we can often reuse the existing outputBuffer and save on allocating
     // something new.
     const auto outputMeterFloats = bVolEmulationActive
-                                   ? stackAllocate(float, framesPerBuffer * numPlaybackChannels)
+                                   ? mCallbackMeterBuffer.data()
                                    : outputBuffer;
     // ----- END of MEMORY ALLOCATIONS ------------------------------------------
 

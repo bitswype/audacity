@@ -274,6 +274,11 @@ public:
     // Avoids heap allocation on the audio feeder thread.
     std::vector<float> mSilenceBuffer;
 
+    // Pre-allocated scratch buffers for AudioCallback.
+    // Replaces stackAllocate (alloca) which overflows at high channel counts.
+    std::vector<float> mCallbackScratchBuffer;     // tempFloats
+    std::vector<float> mCallbackMeterBuffer;       // outputMeterFloats
+
     // Per-track output channel assignments, computed in AllocateBuffers.
     // See ChannelRouting.h for the routing rules.
     std::vector<TrackChannelAssignment> mTrackChannelAssignments;

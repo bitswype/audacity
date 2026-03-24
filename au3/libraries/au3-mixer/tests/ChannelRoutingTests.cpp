@@ -196,3 +196,77 @@ TEST(ChannelRouting, ZeroOutputChannels_AllLegacy)
    EXPECT_EQ(assignments[0].outputChannel, -1);
    EXPECT_EQ(assignments[1].outputChannel, -1);
 }
+
+// ============================================================
+// OVERFLOW CASCADE: Once overflow occurs, all remaining get legacy
+// to prevent mixing collisions
+// ============================================================
+
+TEST(ChannelRouting, OverflowCascade_MonoAfterOverflow_GetsLegacy)
+{
+   // stereo(2) + stereo(2) + mono(1) on 3 outputs
+   // First stereo fits at 0 (next=2), second stereo doesn't fit (2+2>3)
+   // -> overflow. Mono ALSO gets legacy (no collision).
+   auto assignments = ComputeChannelAssignments({2, 2, 1}, 3);
+
+   ASSERT_EQ(assignments.size(), 3u);
+   EXPECT_EQ(assignments[0].outputChannel, 0);   // fits
+   EXPECT_EQ(assignments[1].outputChannel, -1);   // overflow
+   EXPECT_EQ(assignments[2].outputChannel, -1);   // cascade: also legacy
+}
+
+TEST(ChannelRouting, OverflowCascade_AllOverflow)
+{
+   auto assignments = ComputeChannelAssignments({4, 4}, 3);
+
+   ASSERT_EQ(assignments.size(), 2u);
+   EXPECT_EQ(assignments[0].outputChannel, -1);
+   EXPECT_EQ(assignments[1].outputChannel, -1);
+}
+
+TEST(ChannelRouting, OverflowCascade_MultipleOverflows)
+{
+   auto assignments = ComputeChannelAssignments({2, 2, 2}, 3);
+
+   ASSERT_EQ(assignments.size(), 3u);
+   EXPECT_EQ(assignments[0].outputChannel, 0);   // fits
+   EXPECT_EQ(assignments[1].outputChannel, -1);   // overflow
+   EXPECT_EQ(assignments[2].outputChannel, -1);   // cascade
+}
+
+// ============================================================
+// SINGLE MULTI-CHANNEL TRACK
+// ============================================================
+
+TEST(ChannelRouting, SingleSixChannelTrack_SixOutputs)
+{
+   auto assignments = ComputeChannelAssignments({6}, 6);
+
+   ASSERT_EQ(assignments.size(), 1u);
+   EXPECT_EQ(assignments[0].outputChannel, 0);
+}
+
+TEST(ChannelRouting, SingleSixteenChannelTrack_SixteenOutputs)
+{
+   auto assignments = ComputeChannelAssignments({16}, 16);
+
+   ASSERT_EQ(assignments.size(), 1u);
+   EXPECT_EQ(assignments[0].outputChannel, 0);
+}
+
+TEST(ChannelRouting, SingleTrackLargerThanOutput_Legacy)
+{
+   auto assignments = ComputeChannelAssignments({8}, 4);
+
+   ASSERT_EQ(assignments.size(), 1u);
+   EXPECT_EQ(assignments[0].outputChannel, -1);
+}
+
+TEST(ChannelRouting, ZeroChannelTrack_Legacy)
+{
+   auto assignments = ComputeChannelAssignments({0}, 6);
+
+   ASSERT_EQ(assignments.size(), 1u);
+   // Zero-channel track gets legacy (overflow triggered by 0-channel check)
+   EXPECT_EQ(assignments[0].outputChannel, -1);
+}
