@@ -4,6 +4,7 @@ set(MODULE_TEST_SRC
    ${CMAKE_CURRENT_LIST_DIR}/DownmixSourceTests.cpp
    ${CMAKE_CURRENT_LIST_DIR}/DownmixStageTests.cpp
    ${CMAKE_CURRENT_LIST_DIR}/ChannelRoutingTests.cpp
+   ${CMAKE_CURRENT_LIST_DIR}/MixOutputTests.cpp
 )
 
 set(MODULE_TEST_LINK

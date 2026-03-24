@@ -26,6 +26,8 @@ set( SOURCES
    AudioIOSequences.h
    ChannelRouting.cpp
    ChannelRouting.h
+   MixOutput.cpp
+   MixOutput.h
    DownmixSource.cpp
    DownmixSource.h
    DownmixStage.cpp
