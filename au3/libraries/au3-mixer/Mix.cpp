@@ -423,7 +423,10 @@ std::unique_ptr<EffectStage>& Mixer::RegisterEffectStage(
 {
     // Make a mutable copy of stage.settings
     auto& settings = mSettings.emplace_back(stage.settings);
-    // Allocate one extra buffer to hold dummy zero inputs (Issue 3854)
+    // Allocate one extra buffer to hold dummy zero inputs (Issue 3854).
+    // numChannels here is already the source track's channel count (per-track
+    // path) or the output channel count (master path), so unlike DownmixStage
+    // we don't need to scan multiple sources for the widest.
     auto& stageInput = mStageBuffers.emplace_back(
        static_cast<unsigned>(std::max(size_t(3), numChannels + 1)),
        mBufferSize, 1);
