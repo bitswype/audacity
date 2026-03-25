@@ -1517,6 +1517,16 @@ bool AudioIO::AllocateBuffers(
                     // constant rate resampling
                 }
             }
+
+            // Ensure AudioCallback scratch buffer exists for capture format
+            // conversion (SamplesToFloats) even in capture-only mode where
+            // the playback allocation path above was skipped.
+            if (mCallbackScratchBuffer.empty() && mNumCaptureChannels > 0) {
+                auto captureBufferSize
+                    = (size_t)(mRate * mCaptureRingBufferSecs + 0.5);
+                mCallbackScratchBuffer.resize(
+                    captureBufferSize * mNumCaptureChannels, 0.0f);
+            }
         }
         catch (std::bad_alloc&)
         {
@@ -2135,7 +2145,7 @@ bool AudioIO::ProcessPlaybackSlices(
 
     // remember initial processing buffer offsets
     // they may be different depending on latencies
-    const auto processingBufferOffsets = stackAllocate(size_t, mProcessingBuffers.size());
+    std::vector<size_t> processingBufferOffsets(mProcessingBuffers.size());
     for (unsigned n = 0; n < mProcessingBuffers.size(); ++n) {
         processingBufferOffsets[n] = mProcessingBuffers[n].size();
     }
@@ -2217,7 +2227,7 @@ bool AudioIO::ProcessPlaybackSlices(
     // Do any realtime effect processing for each individual sample source,
     // after all the little slices have been written.
     if (pScope) {
-        const auto pointers = stackAllocate(float*, mNumPlaybackChannels);
+        std::vector<float*> pointers(mNumPlaybackChannels);
 
         int bufferIndex = 0;
         for (const auto& seq : mPlaybackSequences) {
@@ -2435,14 +2445,14 @@ bool AudioIO::ProcessPlaybackSlices(
     // previous step
     size_t masterBufferOffset = 0;//The amount of samples to be discarded
     if (pScope) {
-        const auto pointers = stackAllocate(float*, mNumPlaybackChannels);
+        std::vector<float*> pointers(mNumPlaybackChannels);
         for (unsigned i = 0; i < mNumPlaybackChannels; ++i) {
             pointers[i] = mMasterBuffers[i].data();
         }
 
         masterBufferOffset = pScope->Process(
             RealtimeEffectManager::MasterGroup,
-            &pointers[0],
+            pointers.data(),
             mScratchPointers.data(),
             // The single dummy output buffer:
             mScratchPointers[mNumPlaybackChannels],

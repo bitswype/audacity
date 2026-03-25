@@ -245,12 +245,12 @@ Mixer::NeedsDither(bool needsDither, double rate) const
                    && sequence.NChannels() > 1 && mNumChannels == 1) {
             needsDither = true;
         } else if (mApplyVolume != ApplyVolume::Discard) {
-            /// TODO: more-than-two-channels
-            for (auto c : { 0, 1 }) {
+            for (size_t c = 0; c < sequence.NChannels(); ++c) {
                 const auto volume = sequence.GetChannelVolume(c);
                 if (!(volume == 0.0 || volume == 1.0)) {
                     // Fractional volume may be applied even in MixSameRate
                     needsDither = true;
+                    break;
                 }
             }
         }

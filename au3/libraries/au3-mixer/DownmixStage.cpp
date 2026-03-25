@@ -98,10 +98,10 @@ std::optional<size_t> DownmixStage::Acquire(Buffers& data, size_t maxToProcess)
 
         // Insert effect stages here!  Passing them all channels of the track
 
-        // mFloatBuffers is sized at construction to hold the widest source,
-        // so this assert should never fire in correct usage.
-        assert(downmixSource->NChannels() <= mFloatBuffers.Channels());
-        const auto limit = downmixSource->NChannels();
+        // mFloatBuffers is sized at construction to hold the widest source.
+        // Guard against post-construction source changes or programming errors.
+        const auto limit = std::min<size_t>(
+           downmixSource->NChannels(), mFloatBuffers.Channels());
         for (size_t j = 0; j < limit; ++j) {
             const auto pFloat = (const float*)mFloatBuffers.GetReadPosition(j);
             if (mApplyVolume != ApplyVolume::Discard) {
