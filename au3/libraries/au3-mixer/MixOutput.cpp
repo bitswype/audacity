@@ -75,6 +75,11 @@ void MixToOutputBuffers(
 
       } else if (numChannels == 1) {
          // Case 4: Mono track, legacy -- duplicate to all outputs with per-channel gain
+         // TODO: On >2 output channels, gainFn uses the stereo pan model
+         // (channel % 2), which gives alternating L/R gains on channels 2+.
+         // This may not be the intended behavior for multi-channel devices.
+         // Design options: (a) restrict legacy mono to outputs 0-1 only,
+         // (b) unity gain on channels 2+, (c) keep current alternating.
          const auto& src = processingBuffers[bufferIndex];
 
          for (size_t n = 0; n < numOutputChannels; ++n) {
