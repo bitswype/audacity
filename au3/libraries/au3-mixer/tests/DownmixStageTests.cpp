@@ -14,6 +14,7 @@
 #include "au3-audio-graph/AudioGraphSource.h"
 #include "au3-audio-graph/AudioGraphBuffers.h"
 #include "au3-math/SampleCount.h"
+#include "FakePlayableSequence.h"
 
 #include <gtest/gtest.h>
 #include <memory>
@@ -48,6 +49,28 @@ public:
          float* p = &buffers.GetWritePosition(c);
          for (size_t i = 0; i < maxToProcess; ++i)
             p[i] = static_cast<float>(c + 1);
+      }
+      return maxToProcess;
+   }
+
+   sampleCount Remaining() const override { return sampleCount(10000); }
+   bool Release() override { return true; }
+};
+
+// Source that writes per-sample ramp data: channel c, sample i = c*1000+i.
+// This lets us verify every sample position, not just sample 0.
+class RampSource final : public AudioGraph::Source
+{
+public:
+   bool AcceptsBuffers(const Buffers&) const override { return true; }
+   bool AcceptsBlockSize(size_t) const override { return true; }
+
+   std::optional<size_t> Acquire(Buffers& buffers, size_t maxToProcess) override
+   {
+      for (unsigned c = 0; c < buffers.Channels(); ++c) {
+         float* p = &buffers.GetWritePosition(c);
+         for (size_t i = 0; i < maxToProcess; ++i)
+            p[i] = static_cast<float>(c * 1000 + i);
       }
       return maxToProcess;
    }
@@ -365,4 +388,303 @@ TEST(DownmixStage, MixedWidthSources_WideAndNarrow)
       EXPECT_FLOAT_EQ(data[0], static_cast<float>(c + 1))
          << "Output " << c << " should only have wide source data";
    }
+}
+
+// ======================================================================
+// Multi-sample verification: check every sample, not just data[0]
+// ======================================================================
+
+TEST(DownmixStage, SixChannel_AllSamplesPreserved)
+{
+   const size_t numChannels = 6;
+   const size_t blockSize = 32;
+
+   RampSource src;
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SimpleDonwmixSource>(src, numChannels));
+
+   DownmixStage stage(
+      std::move(sources), numChannels, blockSize,
+      DownmixStage::ApplyVolume::Discard);
+
+   AudioGraph::Buffers output(numChannels, blockSize, 1);
+   auto result = stage.Acquire(output, blockSize);
+
+   ASSERT_TRUE(result.has_value());
+   EXPECT_EQ(*result, blockSize);
+
+   // RampSource: channel c, sample i = c*1000 + i
+   for (unsigned c = 0; c < numChannels; ++c) {
+      const float* data = reinterpret_cast<const float*>(
+         output.GetReadPosition(c));
+      for (size_t i = 0; i < blockSize; ++i) {
+         EXPECT_FLOAT_EQ(data[i], static_cast<float>(c * 1000 + i))
+            << "Channel " << c << " sample " << i;
+      }
+   }
+}
+
+// ======================================================================
+// Multi-call Acquire: verify Advance/Rotate state across calls
+// ======================================================================
+
+TEST(DownmixStage, MultipleAcquireCalls_StatePreserved)
+{
+   const size_t numChannels = 4;
+   const size_t blockSize = 64;
+
+   ChannelIdentifyingSource src;
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SimpleDonwmixSource>(src, numChannels));
+
+   DownmixStage stage(
+      std::move(sources), numChannels, blockSize,
+      DownmixStage::ApplyVolume::Discard);
+
+   // Call Acquire three times
+   for (int call = 0; call < 3; ++call) {
+      AudioGraph::Buffers output(numChannels, blockSize, 1);
+      auto result = stage.Acquire(output, blockSize);
+
+      ASSERT_TRUE(result.has_value()) << "Call " << call;
+      EXPECT_EQ(*result, blockSize) << "Call " << call;
+
+      for (unsigned c = 0; c < numChannels; ++c) {
+         const float* data = reinterpret_cast<const float*>(
+            output.GetReadPosition(c));
+         EXPECT_FLOAT_EQ(data[0], static_cast<float>(c + 1))
+            << "Call " << call << " channel " << c;
+      }
+   }
+}
+
+// ======================================================================
+// MapChannels mode: SequenceDownmixSource with per-channel gain
+// ======================================================================
+
+TEST(DownmixStage, MapChannels_AppliesPerChannelGain)
+{
+   // 4-channel source, each channel has DC=1.0.
+   // Per-channel gains: [0.5, 0.8, 0.3, 1.0]
+   // Expected output: channel c = 1.0 * gain[c]
+   const size_t numChannels = 4;
+   const size_t blockSize = 32;
+
+   ChannelIdentifyingSource audioSrc;
+   auto seq = FakePlayableSequence::DC(
+      numChannels, 44100, 1024, {1.0f, 1.0f, 1.0f, 1.0f});
+   seq.SetChannelVolumes({0.5f, 0.8f, 0.3f, 1.0f});
+
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SequenceDownmixSource>(audioSrc, seq, nullptr));
+
+   DownmixStage stage(
+      std::move(sources), numChannels, blockSize,
+      DownmixStage::ApplyVolume::MapChannels);
+
+   AudioGraph::Buffers output(numChannels, blockSize, 1);
+   auto result = stage.Acquire(output, blockSize);
+
+   ASSERT_TRUE(result.has_value());
+   EXPECT_EQ(*result, blockSize);
+
+   // ChannelIdentifyingSource writes float(c+1) per channel.
+   // MapChannels applies volumes[c] = GetChannelGain(c) for all source
+   // channels (when numChannels > 1). With identity routing, source
+   // channel c -> output c, so output[c] = float(c+1) * gain[c].
+   const float gains[] = {0.5f, 0.8f, 0.3f, 1.0f};
+   for (unsigned c = 0; c < numChannels; ++c) {
+      const float* data = reinterpret_cast<const float*>(
+         output.GetReadPosition(c));
+      const float expected = static_cast<float>(c + 1) * gains[c];
+      EXPECT_NEAR(data[0], expected, 1e-5f)
+         << "Channel " << c << " with gain " << gains[c];
+   }
+}
+
+TEST(DownmixStage, MapChannels_SixChannelWithGain)
+{
+   const size_t numChannels = 6;
+   const size_t blockSize = 32;
+
+   ChannelIdentifyingSource audioSrc;
+   auto seq = FakePlayableSequence::DC(
+      numChannels, 44100, 1024,
+      {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+   seq.SetChannelVolumes({0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f});
+
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SequenceDownmixSource>(audioSrc, seq, nullptr));
+
+   DownmixStage stage(
+      std::move(sources), numChannels, blockSize,
+      DownmixStage::ApplyVolume::MapChannels);
+
+   AudioGraph::Buffers output(numChannels, blockSize, 1);
+   auto result = stage.Acquire(output, blockSize);
+
+   ASSERT_TRUE(result.has_value());
+
+   const float gains[] = {0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f};
+   for (unsigned c = 0; c < numChannels; ++c) {
+      const float* data = reinterpret_cast<const float*>(
+         output.GetReadPosition(c));
+      const float expected = static_cast<float>(c + 1) * gains[c];
+      EXPECT_NEAR(data[0], expected, 1e-5f)
+         << "Channel " << c << " with gain " << gains[c];
+   }
+}
+
+// ======================================================================
+// Mixdown mode: stereo to mono with averaging
+// ======================================================================
+
+TEST(DownmixStage, Mixdown_StereoToMono_Averages)
+{
+   // Stereo source -> mono output with Mixdown.
+   // ChannelIdentifyingSource: ch0=1.0, ch1=2.0
+   // Mixdown divides by limit (2), CanMakeMono() is true.
+   // With gain 1.0, output = (1.0/2 + 2.0/2) = 1.5
+   const size_t outChannels = 1;
+   const size_t blockSize = 32;
+
+   ChannelIdentifyingSource audioSrc;
+   auto seq = FakePlayableSequence::DC(2, 44100, 1024, {1.0f, 1.0f});
+   // Default volume 1.0, default pan 0.0 -> both channels gain 1.0
+
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SequenceDownmixSource>(audioSrc, seq, nullptr));
+
+   DownmixStage stage(
+      std::move(sources), outChannels, blockSize,
+      DownmixStage::ApplyVolume::Mixdown);
+
+   AudioGraph::Buffers output(outChannels, blockSize, 1);
+   auto result = stage.Acquire(output, blockSize);
+
+   ASSERT_TRUE(result.has_value());
+   EXPECT_EQ(*result, blockSize);
+
+   // Both source channels route to output 0 (mono fan-out for IsMono=false,
+   // single output). ch0=1.0*1.0/2 + ch1=2.0*1.0/2 = 0.5 + 1.0 = 1.5
+   const float* data = reinterpret_cast<const float*>(
+      output.GetReadPosition(0));
+   EXPECT_NEAR(data[0], 1.5f, 1e-5f)
+      << "Mixdown stereo->mono should average";
+}
+
+// ======================================================================
+// SequenceDownmixSource through full Acquire pipeline
+// ======================================================================
+
+TEST(DownmixStage, SequenceDownmixSource_MonoFanout)
+{
+   // Mono source through SequenceDownmixSource to 4-channel output.
+   // Mono fan-out: all output channels get the source data.
+   const size_t outChannels = 4;
+   const size_t blockSize = 32;
+
+   ChannelIdentifyingSource audioSrc; // ch0 = 1.0
+   auto seq = FakePlayableSequence::DC(1, 44100, 1024, {1.0f});
+
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SequenceDownmixSource>(audioSrc, seq, nullptr));
+
+   DownmixStage stage(
+      std::move(sources), outChannels, blockSize,
+      DownmixStage::ApplyVolume::Discard);
+
+   AudioGraph::Buffers output(outChannels, blockSize, 1);
+   auto result = stage.Acquire(output, blockSize);
+
+   ASSERT_TRUE(result.has_value());
+   EXPECT_EQ(*result, blockSize);
+
+   // Mono fan-out: all outputs get ch0 data (1.0)
+   for (unsigned c = 0; c < outChannels; ++c) {
+      const float* data = reinterpret_cast<const float*>(
+         output.GetReadPosition(c));
+      EXPECT_FLOAT_EQ(data[0], 1.0f)
+         << "Mono fan-out: output " << c << " should get source data";
+   }
+}
+
+TEST(DownmixStage, SequenceDownmixSource_SixChannelIdentity)
+{
+   // 6-channel source through SequenceDownmixSource to 6-channel output.
+   // Identity routing: channel N -> output N.
+   const size_t numChannels = 6;
+   const size_t blockSize = 32;
+
+   ChannelIdentifyingSource audioSrc;
+   auto seq = FakePlayableSequence::DC(
+      numChannels, 44100, 1024,
+      {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SequenceDownmixSource>(audioSrc, seq, nullptr));
+
+   DownmixStage stage(
+      std::move(sources), numChannels, blockSize,
+      DownmixStage::ApplyVolume::Discard);
+
+   AudioGraph::Buffers output(numChannels, blockSize, 1);
+   auto result = stage.Acquire(output, blockSize);
+
+   ASSERT_TRUE(result.has_value());
+   for (unsigned c = 0; c < numChannels; ++c) {
+      const float* data = reinterpret_cast<const float*>(
+         output.GetReadPosition(c));
+      EXPECT_FLOAT_EQ(data[0], static_cast<float>(c + 1))
+         << "Identity routing: output " << c;
+   }
+}
+
+TEST(DownmixStage, SequenceDownmixSource_ChannelBeyondRange_RoutesToOutput0)
+{
+   // 4-channel source routed to 2-channel output.
+   // SequenceDownmixSource routes: ch0->out0, ch1->out1,
+   // ch2->out0 (fallback), ch3->out0 (fallback).
+   // ChannelIdentifyingSource: ch0=1, ch1=2, ch2=3, ch3=4
+   // Output 0 = ch0(1) + ch2(3) + ch3(4) = 8
+   // Output 1 = ch1(2)
+   const size_t srcChannels = 4;
+   const size_t outChannels = 2;
+   const size_t blockSize = 32;
+
+   ChannelIdentifyingSource audioSrc;
+   auto seq = FakePlayableSequence::DC(
+      srcChannels, 44100, 1024, {1.0f, 1.0f, 1.0f, 1.0f});
+
+   std::vector<std::unique_ptr<DownmixSource>> sources;
+   sources.push_back(
+      std::make_unique<SequenceDownmixSource>(audioSrc, seq, nullptr));
+
+   DownmixStage stage(
+      std::move(sources), outChannels, blockSize,
+      DownmixStage::ApplyVolume::Discard);
+
+   AudioGraph::Buffers output(outChannels, blockSize, 1);
+   auto result = stage.Acquire(output, blockSize);
+
+   ASSERT_TRUE(result.has_value());
+   EXPECT_EQ(*result, blockSize);
+
+   const float* d0 = reinterpret_cast<const float*>(
+      output.GetReadPosition(0));
+   const float* d1 = reinterpret_cast<const float*>(
+      output.GetReadPosition(1));
+   // ch0(1.0) + ch2(3.0) + ch3(4.0) = 8.0 on output 0
+   EXPECT_FLOAT_EQ(d0[0], 8.0f)
+      << "Output 0 gets ch0 + overflow channels 2,3";
+   // ch1(2.0) on output 1
+   EXPECT_FLOAT_EQ(d1[0], 2.0f)
+      << "Output 1 gets ch1 only";
 }

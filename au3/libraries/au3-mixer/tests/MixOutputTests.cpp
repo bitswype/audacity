@@ -303,3 +303,61 @@ TEST(MixOutput, ZeroSamples_NoCrash)
    // Should not crash
    MixToOutputBuffers(proc, master, assignments, channelCounts, 4, 0, UnityGain);
 }
+
+// ============================================================
+// MULTI-CHANNEL TRACK WITH LEGACY ROUTING (Case 2)
+// ============================================================
+
+TEST(MixOutput, StereoTrack_Legacy_OnlyTouchesFirstTwoOutputs)
+{
+   // Stereo track with legacy routing on a 6-output device.
+   // Should route L->out0, R->out1; outputs 2-5 must stay silent.
+   auto proc = MakeDCBuffers({0.7f, 0.3f}, 64);
+   auto master = MakeMasterBuffers(6, 64);
+
+   std::vector<TrackChannelAssignment> assignments = {{-1}};
+   std::vector<size_t> channelCounts = {2};
+
+   MixToOutputBuffers(proc, master, assignments, channelCounts, 6, 64, UnityGain);
+
+   ExpectDC(master[0], 0.7f, "output 0 (left)");
+   ExpectDC(master[1], 0.3f, "output 1 (right)");
+   for (size_t ch = 2; ch < 6; ++ch)
+      ExpectSilence(master[ch], ("output " + std::to_string(ch)).c_str());
+}
+
+TEST(MixOutput, TwoStereoTracks_Legacy_Accumulate)
+{
+   // Two stereo tracks, both legacy, accumulate on outputs 0 and 1.
+   auto proc = MakeDCBuffers({0.5f, 0.4f, 0.3f, 0.2f}, 64);
+   auto master = MakeMasterBuffers(4, 64);
+
+   std::vector<TrackChannelAssignment> assignments = {{-1}, {-1}};
+   std::vector<size_t> channelCounts = {2, 2};
+
+   MixToOutputBuffers(proc, master, assignments, channelCounts, 4, 64, UnityGain);
+
+   // Track 1: L=0.5 R=0.4, Track 2: L=0.3 R=0.2
+   ExpectDC(master[0], 0.8f, "output 0 (left sum)");
+   ExpectDC(master[1], 0.6f, "output 1 (right sum)");
+   ExpectSilence(master[2], "output 2");
+   ExpectSilence(master[3], "output 3");
+}
+
+TEST(MixOutput, SixChannelTrack_Legacy_IdentityRoutes)
+{
+   // 6-channel track with legacy routing on 6-output device.
+   // Case 2: each source channel n routes to master[n].
+   auto proc = MakeDCBuffers({0.1f, 0.2f, 0.3f, 0.4f, 0.5f, 0.6f}, 64);
+   auto master = MakeMasterBuffers(6, 64);
+
+   std::vector<TrackChannelAssignment> assignments = {{-1}};
+   std::vector<size_t> channelCounts = {6};
+
+   MixToOutputBuffers(proc, master, assignments, channelCounts, 6, 64, UnityGain);
+
+   for (size_t ch = 0; ch < 6; ++ch) {
+      ExpectDC(master[ch], 0.1f * (ch + 1),
+         ("output " + std::to_string(ch)).c_str());
+   }
+}

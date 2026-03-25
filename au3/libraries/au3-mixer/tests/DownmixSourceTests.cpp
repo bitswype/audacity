@@ -429,3 +429,52 @@ TEST(SequenceDownmixSource, CanMakeMono_FalseWithMap)
 
    EXPECT_FALSE(dmx.CanMakeMono());
 }
+
+// ============================================================
+// SequenceDownmixSource: channel beyond output range (else branch)
+// ============================================================
+
+TEST(SequenceDownmixSource, ChannelBeyondOutputRange_RoutesToOutput0)
+{
+   // 4-channel sequence, 2-channel output.
+   // Channels 0,1 get identity routing.
+   // Channels 2,3 are beyond output range -> route to output 0.
+   auto seq = FakePlayableSequence::DC(4, 48000, 64,
+      {1.0f, 1.0f, 1.0f, 1.0f});
+   StubAudioSource source;
+
+   SequenceDownmixSource dmx(source, seq, nullptr);
+
+   // Channel 2, 2 outputs: should route to output 0
+   auto flags2 = GetFlags(dmx, 2, 2);
+   EXPECT_EQ(flags2[0], 1) << "Overflow channel 2 -> output 0";
+   EXPECT_EQ(flags2[1], 0) << "Overflow channel 2 should not go to output 1";
+
+   // Channel 3, 2 outputs: should also route to output 0
+   auto flags3 = GetFlags(dmx, 2, 3);
+   EXPECT_EQ(flags3[0], 1) << "Overflow channel 3 -> output 0";
+   EXPECT_EQ(flags3[1], 0) << "Overflow channel 3 should not go to output 1";
+}
+
+TEST(SequenceDownmixSource, ChannelBeyondOutputRange_SixToThree)
+{
+   // 6-channel sequence, 3-channel output.
+   // Channels 0-2 get identity. Channels 3-5 route to output 0.
+   auto seq = FakePlayableSequence::DC(6, 48000, 64,
+      {1.0f, 1.0f, 1.0f, 1.0f, 1.0f, 1.0f});
+   StubAudioSource source;
+
+   SequenceDownmixSource dmx(source, seq, nullptr);
+
+   for (size_t ch = 0; ch < 3; ++ch) {
+      auto flags = GetFlags(dmx, 3, ch);
+      EXPECT_EQ(flags[ch], 1) << "Channel " << ch << " identity";
+   }
+   for (size_t ch = 3; ch < 6; ++ch) {
+      auto flags = GetFlags(dmx, 3, ch);
+      EXPECT_EQ(flags[0], 1)
+         << "Overflow channel " << ch << " -> output 0";
+      EXPECT_EQ(flags[1], 0);
+      EXPECT_EQ(flags[2], 0);
+   }
+}
