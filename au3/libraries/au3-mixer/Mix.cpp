@@ -423,11 +423,10 @@ std::unique_ptr<EffectStage>& Mixer::RegisterEffectStage(
 {
     // Make a mutable copy of stage.settings
     auto& settings = mSettings.emplace_back(stage.settings);
-    // TODO: more-than-two-channels
-    // Like mFloatBuffers but padding not needed for soxr
-    // Allocate one extra buffer to hold dummy zero inputs
-    // (Issue 3854)
-    auto& stageInput = mStageBuffers.emplace_back(3, mBufferSize, 1);
+    // Allocate one extra buffer to hold dummy zero inputs (Issue 3854)
+    auto& stageInput = mStageBuffers.emplace_back(
+       static_cast<unsigned>(std::max(size_t(3), numChannels + 1)),
+       mBufferSize, 1);
     const auto& factory = [&stage] {
         // Avoid unnecessary repeated calls to the factory
         return stage.mpFirstInstance ? move(stage.mpFirstInstance)
