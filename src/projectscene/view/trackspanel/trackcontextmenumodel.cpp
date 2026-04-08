@@ -150,6 +150,10 @@ void TrackContextMenuModel::load()
     case trackedit::TrackType::Stereo:
         setItems(makeStereoTrackItems());
         break;
+    case trackedit::TrackType::MultiChannel:
+        // Multi-channel tracks get the same menu as stereo minus split actions
+        setItems(makeStereoTrackItems());
+        break;
     case trackedit::TrackType::Label:
         setItems(makeLabelTrackItems());
         break;

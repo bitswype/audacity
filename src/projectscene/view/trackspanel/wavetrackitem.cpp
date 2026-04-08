@@ -37,6 +37,7 @@ WaveTrackItem::WaveTrackItem(QObject* parent)
 void WaveTrackItem::init(const trackedit::Track& track)
 {
     TrackItem::init(track);
+    m_channelCount = track.channelCount;
 
     emit channelCountChanged();
 
@@ -109,14 +110,7 @@ bool WaveTrackItem::outputOnly() const
 
 int WaveTrackItem::channelCount() const
 {
-    switch (trackType()) {
-    case trackedit::TrackType::Mono:
-        return 1;
-    case trackedit::TrackType::Stereo:
-        return 2;
-    default:
-        return 0;
-    }
+    return m_channelCount;
 }
 
 float WaveTrackItem::leftChannelPressure() const

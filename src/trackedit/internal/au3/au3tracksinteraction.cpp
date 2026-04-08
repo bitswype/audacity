@@ -1347,7 +1347,8 @@ TrackIdList Au3TracksInteraction::determineDestinationTracksIds(const std::vecto
 
     auto matchesFilter = [forLabels](TrackType trackType) -> bool {
         return forLabels ? trackType == TrackType::Label
-               : trackType == TrackType::Mono || trackType == TrackType::Stereo;
+               : trackType == TrackType::Mono || trackType == TrackType::Stereo
+                 || trackType == TrackType::MultiChannel;
     };
 
     //! NOTE: If there's a label track in clipboard, match tracks strictly by position and type

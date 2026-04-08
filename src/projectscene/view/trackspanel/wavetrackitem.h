@@ -100,6 +100,7 @@ private:
     float m_leftChannelRMS = playback::MIN_DISPLAYED_DBFS;
     float m_rightChannelRMS = playback::MIN_DISPLAYED_DBFS;
 
+    int m_channelCount = 0;
     bool m_outputOnly = false;
     bool m_recordStreamChannelsMatch = 0;
 };
