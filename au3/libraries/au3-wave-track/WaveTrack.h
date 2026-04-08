@@ -792,10 +792,8 @@ private:
     // Protected variables
     //
 
-    //! @invariant non-null
-    WaveChannel mChannel;
-    //! may be null
-    std::optional<WaveChannel> mRightChannel;
+    //! @invariant size >= 1; all elements non-null
+    std::vector<std::unique_ptr<WaveChannel>> mChannels;
 
     /*!
      * Do not call `mClips.push_back` directly. Use `InsertClip` instead.
@@ -938,7 +936,6 @@ public:
      * \brief Creates a new track with project's default rate and format and the
      * given number of channels.
      * @pre `nChannels > 0`
-     * @pre `nChannels <= 2`
      */
     WaveTrack::Holder Create(size_t nChannels) const;
 
@@ -952,7 +949,6 @@ public:
      * \brief Creates a new \p track with specified \p format and
      * \p rate and number of channels
      * @pre `nChannels > 0`
-     * @pre `nChannels <= 2`
      */
     WaveTrack::Holder Create(size_t nChannels, sampleFormat format, double rate) const;
 

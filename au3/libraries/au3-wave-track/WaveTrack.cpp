@@ -403,9 +403,9 @@ std::shared_ptr<WaveTrack> WaveTrackFactory::DoCreate(size_t nChannels,
 {
     auto result = std::make_shared<WaveTrack>(
         WaveTrack::CreateToken {}, mpFactory, format, rate);
-    // Set the number of channels correctly before building all channel
-    // attachments
-    if (nChannels > 1) {
+    // Constructor creates 1 channel. Add the rest before building
+    // channel attachments.
+    for (size_t i = 1; i < nChannels; ++i) {
         result->CreateRight();
     }
     // Only after make_shared returns, can weak_from_this be used, which
@@ -422,7 +422,6 @@ std::shared_ptr<WaveTrack> WaveTrackFactory::Create(sampleFormat format, double 
 WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels) const
 {
     assert(nChannels > 0);
-    assert(nChannels <= 2);
     return Create(nChannels, QualitySettings::SampleFormatChoice(), mRate.GetRate());
 }
 
@@ -469,22 +468,13 @@ void WaveTrack::EraseChannelAttachments(size_t ii)
 WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels, sampleFormat format, double rate) const
 {
     assert(nChannels > 0);
-    assert(nChannels <= 2);
     return CreateMany(nChannels, format, rate)->DetachFirst()
            ->SharedPointer<WaveTrack>();
 }
 
 TrackListHolder WaveTrackFactory::CreateMany(size_t nChannels, sampleFormat format, double rate) const
 {
-    // There are some cases where more than two channels are requested
-    if (nChannels == 2) {
-        return TrackList::Temporary(nullptr, DoCreate(nChannels, format, rate));
-    }
-    auto result = TrackList::Temporary(nullptr);
-    while (nChannels--) {
-        result->Add(DoCreate(1, format, rate));
-    }
-    return result;
+    return TrackList::Temporary(nullptr, DoCreate(nChannels, format, rate));
 }
 
 WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels, const WaveTrack& proto) const
@@ -503,8 +493,8 @@ WaveTrack* WaveTrack::New(AudacityProject& project)
 WaveTrack::WaveTrack(CreateToken&&, const SampleBlockFactoryPtr& pFactory,
                      sampleFormat format, double rate)
     : mpFactory(pFactory)
-    , mChannel(*this)
 {
+    mChannels.push_back(std::make_unique<WaveChannel>(*this));
     WaveTrackData::Get(*this).SetSampleFormat(format);
     DoSetRate(static_cast<int>(rate));
 }
@@ -539,7 +529,7 @@ size_t WaveChannel::NChannels() const
 
 size_t WaveTrack::NChannels() const
 {
-    return mRightChannel.has_value() ? 2 : 1;
+    return mChannels.size();
 }
 
 AudioGraph::ChannelType WaveChannel::GetChannelType() const
@@ -745,16 +735,11 @@ bool WaveTrack::HasClipNamed(const wxString& name) const
 
 std::shared_ptr<::Channel> WaveTrack::DoGetChannel(size_t iChannel)
 {
-    auto nChannels = NChannels();
-    if (iChannel >= nChannels) {
+    if (iChannel >= mChannels.size()) {
         return {};
     }
-    // TODO: more-than-two-channels
-    ::Channel& aliased = (iChannel == 0)
-                         ? mChannel
-                         : *mRightChannel;
     // Use aliasing constructor of std::shared_ptr
-    return { shared_from_this(), &aliased };
+    return { shared_from_this(), mChannels[iChannel].get() };
 }
 
 ChannelGroup& WaveChannel::DoGetChannelGroup() const
@@ -1049,7 +1034,7 @@ WaveTrack::Holder WaveTrack::EmptyCopy(size_t nChannels,
     const auto rate = GetRate();
     auto result = std::make_shared<WaveTrack>(CreateToken {},
                                               pFactory, GetSampleFormat(), rate);
-    if (nChannels > 1) {
+    for (size_t i = 1; i < nChannels; ++i) {
         result->CreateRight();
     }
     result->Init(*this);
@@ -1078,11 +1063,13 @@ Track::Holder WaveTrack::TrackEmptyCopy() const
 
 void WaveTrack::MakeMono()
 {
-    mRightChannel.reset();
+    while (mChannels.size() > 1) {
+        EraseChannelAttachments(mChannels.size() - 1);
+        mChannels.pop_back();
+    }
     for (auto& pClip : mClips) {
         pClip->DiscardRightChannel();
     }
-    EraseChannelAttachments(1);
 }
 
 bool WaveTrack::MixDownToMono(const std::function<void(double)>& progress, const std::function<bool()>& cancel)
@@ -1104,9 +1091,9 @@ bool WaveTrack::MixDownToMono(const std::function<void(double)>& progress, const
         }
     }
 
-    if (NChannels() == 2) {
-        mRightChannel.reset();
-        EraseChannelAttachments(1);
+    while (mChannels.size() > 1) {
+        EraseChannelAttachments(mChannels.size() - 1);
+        mChannels.pop_back();
     }
 
     return true;
@@ -3106,7 +3093,7 @@ auto WaveTrack::CopyClip(const Interval& toCopy, bool copyCutlines)
 
 void WaveTrack::CreateRight()
 {
-    mRightChannel.emplace(*this);
+    mChannels.push_back(std::make_unique<WaveChannel>(*this));
 }
 
 auto WaveTrack::DoCreateClip(double offset, const wxString& name) const
