@@ -575,15 +575,18 @@ std::shared_ptr<WaveClip> WaveClip::SplitChannels()
 
 void WaveClip::MakeStereo(WaveClip&& other, bool mustAlign)
 {
-    assert(NChannels() == 1);
-    assert(other.NChannels() == 1);
+    // Removed NChannels() == 1 preconditions: supports appending channels
+    // from other to a clip that already has >1 channel.
+    assert(other.NChannels() >= 1);
     assert(GetSampleFormats() == other.GetSampleFormats());
     assert(GetFactory() == other.GetFactory());
     assert(!mustAlign || GetNumSamples() == other.GetNumSamples());
 
     mCutLines.clear();
-    mSequences.resize(2);
-    mSequences[1] = move(other.mSequences[0]);
+    // Append all sequences from other instead of hardcoding slot [1]
+    for (auto& seq : other.mSequences) {
+        mSequences.push_back(move(seq));
+    }
 
     this->Attachments::ForCorresponding(other,
                                         [mustAlign](WaveClipListener* pLeft, WaveClipListener* pRight){

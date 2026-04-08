@@ -136,11 +136,8 @@ void ChannelAttachmentsBase::MakeStereo(const std::shared_ptr<Track>& parent,
                                         ChannelAttachmentsBase&& other)
 {
     assert(typeid(*this) == typeid(other));
-    assert(Size() <= 1);
-    assert(other.Size() <= 1);
-    if (mAttachments.empty()) {
-        mAttachments.resize(1);
-    }
+    // Removed Size() <= 1 preconditions: supports appending any number
+    // of channels from other, not just mono+mono -> stereo.
     auto index = mAttachments.size();
     for (auto& ptr : other.mAttachments) {
         if (auto& pAttachment = mAttachments.emplace_back(move(ptr))) {
