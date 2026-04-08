@@ -803,6 +803,7 @@ private:
 
     mutable int mLegacyRate{ 0 }; //!< used only during deserialization
     sampleFormat mLegacyFormat{ undefinedSample }; //!< used only during deserialization
+    int mLegacyNChannels{ 0 }; //!< used only during deserialization; 0 = not specified
 
 private:
     //Updates rate parameter only in WaveTrackData

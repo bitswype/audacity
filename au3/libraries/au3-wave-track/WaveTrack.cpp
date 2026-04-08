@@ -665,8 +665,15 @@ bool WaveTrack::LinkConsistencyFix(const bool doFix)
             // Did not visit the other call to removeZeroClips, do it now
             removeZeroClips(NarrowClips());
         } else {
-            // Make a real wide wave track from two deserialized narrow tracks
-            ZipClips();
+            // Make a real wide wave track from deserialized narrow tracks.
+            // For stereo (legacy or nchannels == 2), zip once.
+            // For N > 2 channels, zip N-1 times (once per additional channel).
+            const auto nZips = (mLegacyNChannels > 2)
+               ? (mLegacyNChannels - 1) : 1;
+            for (int i = 0; i < nZips; ++i) {
+                ZipClips();
+            }
+            mLegacyNChannels = 0;
         }
     }
     return !err;
@@ -2447,6 +2454,7 @@ static constexpr auto Volume_attr
              // backward-compatibility with older projects.
 static constexpr auto Pan_attr = "pan";
 static constexpr auto Linked_attr = "linked";
+static constexpr auto NChannels_attr = "nchannels";
 static constexpr auto SampleFormat_attr = "sampleformat";
 static constexpr auto Channel_attr = "channel"; // write-only!
 
@@ -2483,6 +2491,9 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList& 
                 DoSetPan(dblValue);
             } else if (attr == Linked_attr && value.TryGet(nValue)) {
                 SetLinkType(ToLinkType(nValue), false);
+            } else if (attr == NChannels_attr && value.TryGet(nValue)
+                       && nValue > 0) {
+                mLegacyNChannels = static_cast<int>(nValue);
             } else if (attr == SampleFormat_attr && value.TryGet(nValue)
                        && Sequence::IsValidSampleFormat(nValue)) {
                 //Remember sample format until consistency check is performed.
@@ -2602,13 +2613,19 @@ void WaveTrack::WriteOneXML(const WaveChannel& channel, XMLWriter& xmlFile,
         xmlFile.WriteAttr(Channel_attr, channelType);
     }
 
-    // The "linked" flag is used to define the beginning of a channel group
-    // that isn't mono
+    // The "linked" flag marks the beginning of a channel group
     const auto linkType = static_cast<int>(
-        (iChannel == 0) && (nChannels == 2)
+        (iChannel == 0) && (nChannels >= 2)
         ? LinkType::Aligned
         : LinkType::None);
     xmlFile.WriteAttr(Linked_attr, linkType);
+
+    // For >2 channels, also write the channel count so the reader knows
+    // how many following tracks belong to this group. Old Audacity ignores
+    // unknown attributes, so this is backward-compatible.
+    if (iChannel == 0 && nChannels > 2) {
+        xmlFile.WriteAttr(NChannels_attr, static_cast<long>(nChannels));
+    }
 
     // VS: trying to save tracks that didn't pass all necessary
     // initializations on project read from the disk.
@@ -3449,7 +3466,7 @@ void WaveTrack::ZipClips(bool mustAlign)
 {
     const auto pOwner = GetOwner();
     assert(GetOwner()); // pre
-    assert(NChannels() == 1); // pre
+    // Removed NChannels() == 1 assertion: supports successive zips for N channels
 
     // If deserializing, first un-link the track, so iterator finds the partner.
     SetLinkType(LinkType::None);
