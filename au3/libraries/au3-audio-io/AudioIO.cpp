@@ -567,6 +567,8 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
             mNumPlaybackChannels = playbackDeviceInfo->maxOutputChannels;
         }
         playbackParameters.channelCount = mNumPlaybackChannels;
+        wxLogMessage(wxT("AudioIO: requesting %d playback channels (device max: %d)"),
+                     (int)mNumPlaybackChannels, playbackDeviceInfo->maxOutputChannels);
 
         const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(playbackDeviceInfo->hostApi);
         bool isWASAPI = (hostInfo && hostInfo->type == paWASAPI);
@@ -692,6 +694,8 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
                                      audacityAudioCallback, lpUserData);
         if (mLastPaError == paNoError) {
             const auto stream = Pa_GetStreamInfo(mPortStreamV19);
+            wxLogMessage(wxT("AudioIO: Pa_OpenStream succeeded, mNumPlaybackChannels=%d"),
+                         (int)mNumPlaybackChannels);
             // Use the reported latency as a hint about the hardware buffer size
             // required for uninterrupted playback.
             const auto outputLatency
