@@ -54,13 +54,11 @@ bool StretchingSequence::GetNext(
            && mActiveAudioSegmentIt != mAudioSegments.end())
     {
         const auto& segment = *mActiveAudioSegmentIt;
-        // More-than-stereo isn't supported
-        assert(mSequence.NChannels() <= 2);
-        float* offsetBuffers[2] {};
+        std::vector<float*> offsetBuffers(mSequence.NChannels(), nullptr);
         GetOffsetBuffer(
-            offsetBuffers, buffers, mSequence.NChannels(), numProcessedSamples);
+            offsetBuffers.data(), buffers, mSequence.NChannels(), numProcessedSamples);
         numProcessedSamples += segment->GetFloats(
-            offsetBuffers,
+            offsetBuffers.data(),
             numSamples - numProcessedSamples); // No need to reverse, we feed the
                                                // time-stretching algorithm with
                                                // reversed samples already.
@@ -70,11 +68,9 @@ bool StretchingSequence::GetNext(
     }
     const auto remaining = numSamples - numProcessedSamples;
     if (remaining > 0u) {
-        // More-than-stereo isn't supported
-        assert(mSequence.NChannels() <= 2);
-        float* offsetBuffers[2] {};
+        std::vector<float*> offsetBuffers(mSequence.NChannels(), nullptr);
         GetOffsetBuffer(
-            offsetBuffers, buffers, mSequence.NChannels(), numProcessedSamples);
+            offsetBuffers.data(), buffers, mSequence.NChannels(), numProcessedSamples);
         for (auto i = 0u; i < mSequence.NChannels(); ++i) {
             std::fill(offsetBuffers[i], offsetBuffers[i] + remaining, 0.f);
         }
