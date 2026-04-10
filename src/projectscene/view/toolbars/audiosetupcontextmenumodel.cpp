@@ -11,6 +11,7 @@ static const ActionQuery PLAYBACK_CHANGE_AUDIO_API_QUERY("action://playback/chan
 static const ActionQuery PLAYBACK_CHANGE_PLAYBACK_DEVICE_QUERY("action://playback/change-playback-device");
 static const ActionQuery PLAYBACK_CHANGE_RECORDING_DEVICE_QUERY("action://playback/change-recording-device");
 static const ActionQuery PLAYBACK_CHANGE_INPUT_CHANNELS_QUERY("action://playback/change-input-channels");
+static const ActionQuery PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY("action://playback/change-output-channels");
 
 namespace {
 bool containsAny(const ActionCodeList& list, const ActionCodeList& actionCodes)
@@ -36,7 +37,8 @@ void AudioSetupContextMenuModel::onActionsStateChanges(const muse::actions::Acti
     auto audioSetupCodeList = { PLAYBACK_CHANGE_AUDIO_API_QUERY.toString(),
                                 PLAYBACK_CHANGE_PLAYBACK_DEVICE_QUERY.toString(),
                                 PLAYBACK_CHANGE_RECORDING_DEVICE_QUERY.toString(),
-                                PLAYBACK_CHANGE_INPUT_CHANNELS_QUERY.toString() };
+                                PLAYBACK_CHANGE_INPUT_CHANNELS_QUERY.toString(),
+                                PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY.toString() };
 
     if (containsAny(codes, audioSetupCodeList)) {
         //! NOTE: changing audio setup may change available items within context menu
@@ -49,6 +51,7 @@ void AudioSetupContextMenuModel::makeMenuItems()
     MenuItemList items {
         makeMenu(muse::TranslatableString("audio setup", "Host"), makeHostItems(), "hostMenu"),
         makeMenu(muse::TranslatableString("audio setup", "Playback device"), makePlaybackDevicesItems(), "playbackDeviceMenu"),
+        makeMenu(muse::TranslatableString("audio setup", "Playback channels"), makeOutputChannelsItems(), "outputChannelsMenu"),
         makeMenu(muse::TranslatableString("audio setup", "Recording device"), makeRecordingDevicesItems(), "recordingDeviceMenu"),
         makeMenu(muse::TranslatableString("audio setup", "Recording channels"), makeInputChannelsItems(), "inputChannelsMenu"),
         makeMenuItem("rescan-devices"),
@@ -161,6 +164,42 @@ MenuItemList AudioSetupContextMenuModel::makeInputChannelsItems()
         item->setId(QString::fromStdString(item->query().toString()));
 
         if (inputChannelsSelected == (channelNumber)) {
+            item->setChecked(true);
+        }
+        items << item;
+    }
+
+    return items;
+}
+
+MenuItemList AudioSetupContextMenuModel::makeOutputChannelsItems()
+{
+    MenuItemList items;
+    int outputChannelsSelected = audioDevicesProvider()->outputChannelsSelected();
+    int outputChannelsAvailable = audioDevicesProvider()->outputChannelsAvailable();
+
+    auto makeChangeOutputChannelsAction = [](int index) -> ActionQuery {
+        ActionQuery q = PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY;
+        q.addParam("output-channels_index", muse::Val(index));
+        return q;
+    };
+
+    auto channelName = [](int channelNumber) -> QString {
+        return channelNumber == 1
+               ? muse::qtrc("projectscene/toolbars", "%1 (Mono) Playback channel").arg(channelNumber)
+               : channelNumber == 2
+               ? muse::qtrc("projectscene/toolbars", "%1 (Stereo) Playback channels").arg(channelNumber)
+               : muse::qtrc("projectscene/toolbars", "%1 Playback channels").arg(channelNumber);
+    };
+
+    for (int i = 0; i < outputChannelsAvailable; ++i) {
+        int channelNumber = i + 1;
+        MenuItem* item = makeMenuItem(makeChangeOutputChannelsAction(channelNumber).toString(),
+                                      muse::TranslatableString::untranslatable(channelName(channelNumber)));
+
+        item->setId(QString::fromStdString(item->query().toString()));
+
+        if (outputChannelsSelected == channelNumber) {
             item->setChecked(true);
         }
         items << item;

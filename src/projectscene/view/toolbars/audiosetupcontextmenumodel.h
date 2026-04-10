@@ -29,5 +29,6 @@ private:
     muse::uicomponents::MenuItemList makePlaybackDevicesItems();
     muse::uicomponents::MenuItemList makeRecordingDevicesItems();
     muse::uicomponents::MenuItemList makeInputChannelsItems();
+    muse::uicomponents::MenuItemList makeOutputChannelsItems();
 };
 }
