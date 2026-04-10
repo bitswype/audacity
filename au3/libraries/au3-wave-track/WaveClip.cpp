@@ -642,25 +642,27 @@ bool WaveClip::MakeMono(const std::function<void(double)>& progress, const std::
         return true;
     }
     constexpr auto blockSize = 1024;
+    const auto nCh = NChannels();
     auto n = 0;
 
     auto mix = std::make_unique<Sequence>(GetFactory(), SampleFormats { floatSample, floatSample });
-    std::optional<AudioSegmentSampleView> leftView;
-    std::optional<AudioSegmentSampleView> rightView;
     const auto nSamples = mSequences[0]->GetNumSamples();
     while (n < nSamples)
     {
         const auto len
             =std::min<sampleCount>(blockSize, nSamples - n)
               .as_size_t();
-        leftView.emplace(mSequences[0]->GetFloatSampleView(n, len, true));
-        rightView.emplace(mSequences[1]->GetFloatSampleView(n, len, true));
         std::array<float, blockSize> buffer;
         buffer.fill(0);
-        leftView->AddTo(buffer.data(), len);
-        rightView->AddTo(buffer.data(), len);
+        // Sum all channels into the buffer
+        for (size_t ch = 0; ch < nCh; ++ch) {
+            auto view = mSequences[ch]->GetFloatSampleView(n, len, true);
+            view.AddTo(buffer.data(), len);
+        }
+        // Divide by the actual channel count
+        const float divisor = static_cast<float>(nCh);
         for (size_t i = 0; i < len; ++i) {
-            buffer[i] /= 2;
+            buffer[i] /= divisor;
         }
         mix->Append(
             reinterpret_cast<constSamplePtr>(buffer.data()), floatSample, len, 1,

@@ -1015,7 +1015,7 @@ void ProjectFileManager::FixTracks(TrackList& tracks,
         // and return no error; or it may find a real error and repair it, but
         // that repaired track won't be used because opening will fail.
         if (!t->LinkConsistencyFix()) {
-            onError(XO("A channel of a stereo track was missing."));
+            onError(XO("A channel of a multi-channel track was missing."));
             unlinkedTrack = nullptr;
         }
         // After LinkConsistencyFix, partner tracks may have been consumed
