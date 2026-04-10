@@ -178,14 +178,14 @@ void ChannelMappingTableViewModel::rebuildChannelRows()
         }
 
         const QString baseName = track.title.toQString();
-        const bool isStereo = (track.type == trackedit::TrackType::Stereo);
+        const int nChannels = track.channelCount;
 
-        if (!isStereo) {
+        if (nChannels <= 1) {
             ChannelRow m;
             m.track = track;
             m.title = baseName;
             m_rows.push_back(std::move(m));
-        } else {
+        } else if (nChannels == 2) {
             ChannelRow l;
             l.track = track;
             l.title = baseName + " L";
@@ -195,6 +195,14 @@ void ChannelMappingTableViewModel::rebuildChannelRows()
             r.track = track;
             r.title = baseName + " R";
             m_rows.push_back(std::move(r));
+        } else {
+            // N-channel track: one row per channel
+            for (int ch = 0; ch < nChannels; ++ch) {
+                ChannelRow row;
+                row.track = track;
+                row.title = baseName + " " + QString::number(ch + 1);
+                m_rows.push_back(std::move(row));
+            }
         }
     }
 }

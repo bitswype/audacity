@@ -308,9 +308,11 @@ muse::Ret Au3TracksInteraction::pasteClips(const std::vector<Au3TrackDataPtr>& c
             if (trackChanged) {
                 prj->trackChanged().send(DomConverter::track(dstWaveTrack));
             }
-        } else if (trackToPaste->NChannels() == 1 && dstWaveTrack->NChannels() == 2) {
+        } else if (trackToPaste->NChannels() < dstWaveTrack->NChannels()
+                   && trackToPaste->NChannels() == 1) {
             trackToPaste->MonoToStereo();
-        } else if (trackToPaste->NChannels() == 2 && dstWaveTrack->NChannels() == 1) {
+        } else if (trackToPaste->NChannels() > dstWaveTrack->NChannels()
+                   && dstWaveTrack->NChannels() == 1) {
             ok = utils::withProgress(*interactive(), mixingDownToMonoLabel, [&](utils::ProgressCb progressCb, utils::CancelCb cancelCb)
             {
                 return trackToPaste->MixDownToMono(progressCb, cancelCb);
@@ -945,34 +947,43 @@ bool Au3TracksInteraction::splitStereoTracksToLRMono(const TrackIdList& tracksId
             return false;
         }
 
-        if (waveTrack->Channels().size() != 2) {
-            LOGW() << "Cannot split stereo channels on a non-stereo track: " << trackId;
+        if (waveTrack->Channels().size() < 2) {
+            LOGW() << "Cannot split channels on a mono track: " << trackId;
             continue;
         }
 
         const std::vector<WaveTrack::Holder> unlinkedTracks = waveTrack->SplitChannels();
-        IF_ASSERT_FAILED(unlinkedTracks.size() == 2) {
-            LOGW() << "Failed to split stereo channels on track: " << trackId;
+        IF_ASSERT_FAILED(unlinkedTracks.size() >= 2) {
+            LOGW() << "Failed to split channels on track: " << trackId;
             continue;
         }
 
-        unlinkedTracks[0]->SetPan(-1.0f);
-        unlinkedTracks[1]->SetPan(1.0f);
+        // Set pan for the first two channels (L/R), leave others centered
+        if (unlinkedTracks.size() >= 2) {
+            unlinkedTracks[0]->SetPan(-1.0f);
+            unlinkedTracks[1]->SetPan(1.0f);
+        }
 
         trackedit::ITrackeditProjectPtr prj = globalContext()->currentTrackeditProject();
-        prj->notifyAboutTrackAdded(DomConverter::track(unlinkedTracks[0].get()));
-        prj->notifyAboutTrackAdded(DomConverter::track(unlinkedTracks[1].get()));
+        for (const auto& t : unlinkedTracks) {
+            prj->notifyAboutTrackAdded(DomConverter::track(t.get()));
+        }
 
         if (trackNavigationController()->focusedTrack() == trackId) {
             trackNavigationController()->setFocusedTrack(unlinkedTracks[0]->GetId());
         }
 
         const auto viewState = globalContext()->currentProject()->viewState();
-        const int newHeight = std::max(viewState->trackHeight(trackId).val / 2, viewState->trackDefaultHeight());
-        viewState->setTrackHeight(unlinkedTracks[0]->GetId(), newHeight);
-        viewState->setTrackHeight(unlinkedTracks[1]->GetId(), newHeight);
+        const int newHeight = std::max(
+            viewState->trackHeight(trackId).val / static_cast<int>(unlinkedTracks.size()),
+            viewState->trackDefaultHeight());
+        TrackIdList newTrackIds;
+        for (const auto& t : unlinkedTracks) {
+            viewState->setTrackHeight(t->GetId(), newHeight);
+            newTrackIds.push_back(t->GetId());
+        }
 
-        moveTracksTo({ unlinkedTracks[0]->GetId(), unlinkedTracks[1]->GetId() }, trackPosition(trackId));
+        moveTracksTo(newTrackIds, trackPosition(trackId));
 
         const auto originalTrack = DomConverter::track(waveTrack);
         auto& tracks = Au3TrackList::Get(projectRef());
@@ -991,31 +1002,37 @@ bool Au3TracksInteraction::splitStereoTracksToCenterMono(const TrackIdList& trac
             return false;
         }
 
-        if (waveTrack->Channels().size() != 2) {
-            LOGW() << "Cannot split stereo channels on a non-stereo track: " << trackId;
+        if (waveTrack->Channels().size() < 2) {
+            LOGW() << "Cannot split channels on a mono track: " << trackId;
             continue;
         }
 
         const std::vector<WaveTrack::Holder> unlinkedTracks = waveTrack->SplitChannels();
-        IF_ASSERT_FAILED(unlinkedTracks.size() == 2) {
-            LOGW() << "Failed to split stereo channels on track: " << trackId;
+        IF_ASSERT_FAILED(unlinkedTracks.size() >= 2) {
+            LOGW() << "Failed to split channels on track: " << trackId;
             continue;
         }
 
         trackedit::ITrackeditProjectPtr prj = globalContext()->currentTrackeditProject();
-        prj->notifyAboutTrackAdded(DomConverter::track(unlinkedTracks[0].get()));
-        prj->notifyAboutTrackAdded(DomConverter::track(unlinkedTracks[1].get()));
+        for (const auto& t : unlinkedTracks) {
+            prj->notifyAboutTrackAdded(DomConverter::track(t.get()));
+        }
 
         if (trackNavigationController()->focusedTrack() == trackId) {
             trackNavigationController()->setFocusedTrack(unlinkedTracks[0]->GetId());
         }
 
         const auto viewState = globalContext()->currentProject()->viewState();
-        const int newHeight = std::max(viewState->trackHeight(trackId).val / 2, viewState->trackDefaultHeight());
-        viewState->setTrackHeight(unlinkedTracks[0]->GetId(), newHeight);
-        viewState->setTrackHeight(unlinkedTracks[1]->GetId(), newHeight);
+        const int newHeight = std::max(
+            viewState->trackHeight(trackId).val / static_cast<int>(unlinkedTracks.size()),
+            viewState->trackDefaultHeight());
+        TrackIdList newTrackIds;
+        for (const auto& t : unlinkedTracks) {
+            viewState->setTrackHeight(t->GetId(), newHeight);
+            newTrackIds.push_back(t->GetId());
+        }
 
-        moveTracksTo({ unlinkedTracks[0]->GetId(), unlinkedTracks[1]->GetId() }, trackPosition(trackId));
+        moveTracksTo(newTrackIds, trackPosition(trackId));
 
         auto& tracks = Au3TrackList::Get(projectRef());
         const auto originalTrack = DomConverter::track(waveTrack);

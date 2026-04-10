@@ -1379,7 +1379,7 @@ bool Au3ClipsInteraction::clipTransferNeedsDownmixing(const std::vector<ITrackDa
             continue;
         }
 
-        if (srcTrack->NChannels() == 2 && dstTrack->NChannels() == 1) {
+        if (srcTrack->NChannels() > dstTrack->NChannels()) {
             return true;
         }
     }
