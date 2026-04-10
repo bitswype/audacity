@@ -193,7 +193,7 @@ bool AudioIoCallback::mCachedBestRateCapturing;
    #undef REALTIME_ALSA_THREAD
 #endif
 
-#ifdef REALTIME_ALSA_THREAD
+#ifdef __WXGTK__
 #include "pa_linux_alsa.h"
 #endif
 
@@ -541,6 +541,10 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
    #ifdef __WXMSW__
     PaWasapiStreamInfo wasapiStreamInfo{};
    #endif
+   #ifdef __WXGTK__
+    PaAlsaStreamInfo alsaStreamInfo{};
+    std::string alsaDeviceString;
+   #endif
 
     auto latencyDuration = AudioIOLatencyDuration.Read();
 
@@ -567,8 +571,6 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
             mNumPlaybackChannels = playbackDeviceInfo->maxOutputChannels;
         }
         playbackParameters.channelCount = mNumPlaybackChannels;
-        wxLogMessage(wxT("AudioIO: requesting %d playback channels (device max: %d)"),
-                     (int)mNumPlaybackChannels, playbackDeviceInfo->maxOutputChannels);
 
         const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(playbackDeviceInfo->hostApi);
         bool isWASAPI = (hostInfo && hostInfo->type == paWASAPI);
@@ -585,6 +587,33 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
             wasapiStreamInfo.flags = paWinWasapiAutoConvert;
 
             playbackParameters.hostApiSpecificStreamInfo = &wasapiStreamInfo;
+        }
+      #endif
+
+      #ifdef __WXGTK__
+        // Bypass PortAudio's channel adaptation logic (DoChannelAdaption)
+        // which duplicates the last channel of odd-count streams to form
+        // a stereo pair. By providing the ALSA device string directly,
+        // PortAudio sets numHostChannels == numUserChannels and skips
+        // all channel adaptation. ALSA's plughw plugin handles the
+        // mapping to the device's native channel count cleanly.
+        bool isALSA = (hostInfo && hostInfo->type == paALSA);
+        if (isALSA && playbackDeviceInfo->name) {
+            // Extract "hw:X,Y" from device name like "Shaker: USB Audio (hw:1,0)"
+            std::string devName(playbackDeviceInfo->name);
+            auto hwPos = devName.find("hw:");
+            if (hwPos != std::string::npos) {
+                auto endPos = devName.find(')', hwPos);
+                if (endPos == std::string::npos)
+                    endPos = devName.length();
+                std::string hwId = devName.substr(hwPos, endPos - hwPos);
+                // Use plughw: so ALSA handles channel/format conversion
+                alsaDeviceString = "plug" + hwId;
+
+                PaAlsa_InitializeStreamInfo(&alsaStreamInfo);
+                alsaStreamInfo.deviceString = alsaDeviceString.c_str();
+                playbackParameters.hostApiSpecificStreamInfo = &alsaStreamInfo;
+            }
         }
       #endif
 
@@ -694,8 +723,6 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
                                      audacityAudioCallback, lpUserData);
         if (mLastPaError == paNoError) {
             const auto stream = Pa_GetStreamInfo(mPortStreamV19);
-            wxLogMessage(wxT("AudioIO: Pa_OpenStream succeeded, mNumPlaybackChannels=%d"),
-                         (int)mNumPlaybackChannels);
             // Use the reported latency as a hint about the hardware buffer size
             // required for uninterrupted playback.
             const auto outputLatency
@@ -1413,17 +1440,6 @@ bool AudioIO::AllocateBuffers(
                         trackChannelCounts.push_back(seq->NChannels());
                     mTrackChannelAssignments = ComputeChannelAssignments(
                         trackChannelCounts, mNumPlaybackChannels);
-
-                    // Diagnostic: log routing decisions
-                    wxString msg = wxString::Format(
-                        wxT("AudioIO routing: %zu seqs, %d outputs. Assignments:"),
-                        trackChannelCounts.size(), (int)mNumPlaybackChannels);
-                    for (size_t i = 0; i < trackChannelCounts.size(); ++i) {
-                        msg += wxString::Format(wxT(" seq%zu(%zuch)->out%d"),
-                            i, trackChannelCounts[i],
-                            mTrackChannelAssignments[i].outputChannel);
-                    }
-                    wxLogMessage(msg);
                 }
 
                 mPlaybackMixers.clear();
@@ -3546,37 +3562,6 @@ int AudioIoCallback::AudioCallback(
         tempFloats);
 
     SendVuOutputMeterData(outputMeterFloats, framesPerBuffer, levelDisplayTime);
-
-    // One-shot diagnostic: log RMS per channel of the output buffer
-    // Skip initial silence, then log 3 frames with actual audio
-    static int diagCount = 0;
-    static bool foundAudio = false;
-    if (outputBuffer && diagCount < 3) {
-        // Check if this frame has audio
-        float maxVal = 0;
-        for (unsigned long i = 0; i < framesPerBuffer && !foundAudio; ++i) {
-            float v = fabsf(outputBuffer[mNumPlaybackChannels * i]);
-            if (v > maxVal) maxVal = v;
-        }
-        if (maxVal < 0.001f && !foundAudio) {
-            return mCallbackReturn; // skip silence
-        }
-        foundAudio = true;
-        ++diagCount;
-        const auto nch = mNumPlaybackChannels;
-        wxString msg = wxString::Format(wxT("AudioIO callback: %d ch, %lu frames. RMS:"),
-                                        (int)nch, framesPerBuffer);
-        for (size_t ch = 0; ch < std::min(nch, size_t(8)); ++ch) {
-            double sum = 0;
-            for (unsigned long i = 0; i < framesPerBuffer; ++i) {
-                float val = outputBuffer[nch * i + ch];
-                sum += val * val;
-            }
-            double rms = sqrt(sum / framesPerBuffer);
-            msg += wxString::Format(wxT(" ch%d=%.4f"), (int)ch, rms);
-        }
-        wxLogMessage(msg);
-    }
 
     return mCallbackReturn;
 }
