@@ -193,7 +193,7 @@ bool AudioIoCallback::mCachedBestRateCapturing;
    #undef REALTIME_ALSA_THREAD
 #endif
 
-#ifdef __WXGTK__
+#ifdef REALTIME_ALSA_THREAD
 #include "pa_linux_alsa.h"
 #endif
 
@@ -541,10 +541,6 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
    #ifdef __WXMSW__
     PaWasapiStreamInfo wasapiStreamInfo{};
    #endif
-   #ifdef __WXGTK__
-    PaAlsaStreamInfo alsaStreamInfo{};
-    std::string alsaDeviceString;
-   #endif
 
     auto latencyDuration = AudioIOLatencyDuration.Read();
 
@@ -570,7 +566,14 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
         if (mNumPlaybackChannels > static_cast<size_t>(playbackDeviceInfo->maxOutputChannels)) {
             mNumPlaybackChannels = playbackDeviceInfo->maxOutputChannels;
         }
-        playbackParameters.channelCount = mNumPlaybackChannels;
+
+        // Open PortAudio with the device's native channel count to bypass
+        // PortAudio's ALSA DoChannelAdaption logic, which duplicates the
+        // last channel of odd-count streams to form a stereo pair.
+        // We control channel fill ourselves: audio goes to the first
+        // mNumPlaybackChannels, the rest are zeroed in DoPlaythrough.
+        mDevicePlaybackChannels = playbackDeviceInfo->maxOutputChannels;
+        playbackParameters.channelCount = mDevicePlaybackChannels;
 
         const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(playbackDeviceInfo->hostApi);
         bool isWASAPI = (hostInfo && hostInfo->type == paWASAPI);
@@ -587,33 +590,9 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
             wasapiStreamInfo.flags = paWinWasapiAutoConvert;
 
             playbackParameters.hostApiSpecificStreamInfo = &wasapiStreamInfo;
-        }
-      #endif
-
-      #ifdef __WXGTK__
-        // Bypass PortAudio's channel adaptation logic (DoChannelAdaption)
-        // which duplicates the last channel of odd-count streams to form
-        // a stereo pair. By providing the ALSA device string directly,
-        // PortAudio sets numHostChannels == numUserChannels and skips
-        // all channel adaptation. ALSA's plughw plugin handles the
-        // mapping to the device's native channel count cleanly.
-        bool isALSA = (hostInfo && hostInfo->type == paALSA);
-        if (isALSA && playbackDeviceInfo->name) {
-            // Extract "hw:X,Y" from device name like "Shaker: USB Audio (hw:1,0)"
-            std::string devName(playbackDeviceInfo->name);
-            auto hwPos = devName.find("hw:");
-            if (hwPos != std::string::npos) {
-                auto endPos = devName.find(')', hwPos);
-                if (endPos == std::string::npos)
-                    endPos = devName.length();
-                std::string hwId = devName.substr(hwPos, endPos - hwPos);
-                // Use plughw: so ALSA handles channel/format conversion
-                alsaDeviceString = "plug" + hwId;
-
-                PaAlsa_InitializeStreamInfo(&alsaStreamInfo);
-                alsaStreamInfo.deviceString = alsaDeviceString.c_str();
-                playbackParameters.hostApiSpecificStreamInfo = &alsaStreamInfo;
-            }
+            // On WASAPI, use the requested count directly
+            mDevicePlaybackChannels = mNumPlaybackChannels;
+            playbackParameters.channelCount = mNumPlaybackChannels;
         }
       #endif
 
@@ -1422,7 +1401,7 @@ bool AudioIO::AllocateBuffers(
                         mCallbackScratchBuffer.resize(
                             playbackBufferSize * maxChannels, 0.0f);
                         mCallbackMeterBuffer.resize(
-                            playbackBufferSize * mNumPlaybackChannels, 0.0f);
+                            playbackBufferSize * mDevicePlaybackChannels, 0.0f);
                     }
                 }
 
@@ -2925,6 +2904,7 @@ bool AudioIoCallback::FillOutputBuffers(
 {
     const auto numPlaybackSequences = mPlaybackSequences.size();
     const auto numPlaybackChannels = mNumPlaybackChannels;
+    const auto deviceChannels = mDevicePlaybackChannels;
 
     mMaxFramesOutput = 0;
 
@@ -3031,9 +3011,12 @@ bool AudioIoCallback::FillOutputBuffers(
 
             // Output volume emulation: possibly copy meter samples, then
             // apply volume, then copy to the output buffer
+            // Use deviceChannels as stride for the interleaved output buffer
+            // (which may be wider than numPlaybackChannels to match the
+            // device's native channel count).
             if (outputMeterFloats != outputFloats) {
                 for ( unsigned i = 0; i < numberOfRetrievedFrames; ++i) {
-                    outputMeterFloats[numPlaybackChannels * i + n]
+                    outputMeterFloats[deviceChannels * i + n]
                         +=playbackVolume * tempBufs[n][i];
                 }
             }
@@ -3050,7 +3033,7 @@ bool AudioIoCallback::FillOutputBuffers(
             // opaque ways
             const float deltaVolume = (playbackVolume - oldVolume) / numberOfRetrievedFrames;
             for (unsigned i = 0; i < numberOfRetrievedFrames; i++) {
-                outputFloats[numPlaybackChannels * i + n]
+                outputFloats[deviceChannels * i + n]
                     +=(oldVolume + deltaVolume * i) * tempBufs[n][i];
             }
         }
@@ -3063,9 +3046,9 @@ bool AudioIoCallback::FillOutputBuffers(
 
     mLastPlaybackTimeMillis = ::wxGetUTCTimeMillis();
 
-    ClampBuffer(outputFloats, framesPerBuffer * numPlaybackChannels);
+    ClampBuffer(outputFloats, framesPerBuffer * deviceChannels);
     if (outputMeterFloats != outputFloats) {
-        ClampBuffer(outputMeterFloats, framesPerBuffer * numPlaybackChannels);
+        ClampBuffer(outputMeterFloats, framesPerBuffer * deviceChannels);
     }
 
     return false;
@@ -3255,6 +3238,7 @@ void AudioIoCallback::DoPlaythrough(
 {
     const auto numCaptureChannels = mNumCaptureChannels;
     const auto numPlaybackChannels = mNumPlaybackChannels;
+    const auto deviceChannels = mDevicePlaybackChannels;
 
     // Quick returns if next to nothing to do.
     if (!outputBuffer) {
@@ -3264,8 +3248,10 @@ void AudioIoCallback::DoPlaythrough(
         return;
     }
 
+    // Zero the FULL device-width buffer, not just the user's requested
+    // channels. This ensures unused device channels are silent.
     float* outputFloats = outputBuffer;
-    for (unsigned i = 0; i < framesPerBuffer * numPlaybackChannels; i++) {
+    for (unsigned i = 0; i < framesPerBuffer * deviceChannels; i++) {
         outputFloats[i] = 0.0;
     }
 
@@ -3273,12 +3259,12 @@ void AudioIoCallback::DoPlaythrough(
         DoSoftwarePlaythrough(inputBuffer, mCaptureFormat,
                               numCaptureChannels,
                               outputBuffer, framesPerBuffer,
-                              numPlaybackChannels);
+                              deviceChannels);
     }
 
     // Copy the results to outputMeterFloats if necessary
     if (outputMeterFloats != outputFloats) {
-        for (unsigned i = 0; i < framesPerBuffer * numPlaybackChannels; ++i) {
+        for (unsigned i = 0; i < framesPerBuffer * deviceChannels; ++i) {
             outputMeterFloats[i] = outputFloats[i];
         }
     }
@@ -3487,6 +3473,7 @@ int AudioIoCallback::AudioCallback(
     // tempFloats will be a reusable scratch pad for (possibly format converted)
     // audio data.  One temporary use is for the InputMeter data.
     const auto numPlaybackChannels = mNumPlaybackChannels;
+    const auto devicePlaybackChannels = mDevicePlaybackChannels;
     const auto numCaptureChannels = mNumCaptureChannels;
     // Use pre-allocated heap buffers instead of stackAllocate (alloca).
     // At high channel counts, alloca would overflow the callback thread stack.
