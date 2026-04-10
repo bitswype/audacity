@@ -1413,6 +1413,17 @@ bool AudioIO::AllocateBuffers(
                         trackChannelCounts.push_back(seq->NChannels());
                     mTrackChannelAssignments = ComputeChannelAssignments(
                         trackChannelCounts, mNumPlaybackChannels);
+
+                    // Diagnostic: log routing decisions
+                    wxString msg = wxString::Format(
+                        wxT("AudioIO routing: %zu seqs, %d outputs. Assignments:"),
+                        trackChannelCounts.size(), (int)mNumPlaybackChannels);
+                    for (size_t i = 0; i < trackChannelCounts.size(); ++i) {
+                        msg += wxString::Format(wxT(" seq%zu(%zuch)->out%d"),
+                            i, trackChannelCounts[i],
+                            mTrackChannelAssignments[i].outputChannel);
+                    }
+                    wxLogMessage(msg);
                 }
 
                 mPlaybackMixers.clear();
@@ -3535,6 +3546,37 @@ int AudioIoCallback::AudioCallback(
         tempFloats);
 
     SendVuOutputMeterData(outputMeterFloats, framesPerBuffer, levelDisplayTime);
+
+    // One-shot diagnostic: log RMS per channel of the output buffer
+    // Skip initial silence, then log 3 frames with actual audio
+    static int diagCount = 0;
+    static bool foundAudio = false;
+    if (outputBuffer && diagCount < 3) {
+        // Check if this frame has audio
+        float maxVal = 0;
+        for (unsigned long i = 0; i < framesPerBuffer && !foundAudio; ++i) {
+            float v = fabsf(outputBuffer[mNumPlaybackChannels * i]);
+            if (v > maxVal) maxVal = v;
+        }
+        if (maxVal < 0.001f && !foundAudio) {
+            return mCallbackReturn; // skip silence
+        }
+        foundAudio = true;
+        ++diagCount;
+        const auto nch = mNumPlaybackChannels;
+        wxString msg = wxString::Format(wxT("AudioIO callback: %d ch, %lu frames. RMS:"),
+                                        (int)nch, framesPerBuffer);
+        for (size_t ch = 0; ch < std::min(nch, size_t(8)); ++ch) {
+            double sum = 0;
+            for (unsigned long i = 0; i < framesPerBuffer; ++i) {
+                float val = outputBuffer[nch * i + ch];
+                sum += val * val;
+            }
+            double rms = sqrt(sum / framesPerBuffer);
+            msg += wxString::Format(wxT(" ch%d=%.4f"), (int)ch, rms);
+        }
+        wxLogMessage(msg);
+    }
 
     return mCallbackReturn;
 }
