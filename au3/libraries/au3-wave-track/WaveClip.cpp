@@ -481,10 +481,14 @@ size_t WaveClip::GetAppendBufferLen(size_t iChannel) const
 
 void WaveClip::DiscardRightChannel()
 {
-    mSequences.resize(1);
-    this->Attachments::ForEach([](WaveClipListener& attachment){
-        attachment.Erase(1);
-    });
+    // Erase all channels beyond 0, from last to first
+    while (mSequences.size() > 1) {
+        const auto last = mSequences.size() - 1;
+        this->Attachments::ForEach([last](WaveClipListener& attachment){
+            attachment.Erase(last);
+        });
+        mSequences.pop_back();
+    }
     for (auto& pCutline : mCutLines) {
         pCutline->DiscardRightChannel();
     }
@@ -494,7 +498,7 @@ void WaveClip::DiscardRightChannel()
 
 void WaveClip::SwapChannels()
 {
-    assert(NChannels() == 2);
+    assert(NChannels() >= 2);
     this->Attachments::ForEach([](WaveClipListener& attachment){
         attachment.SwapChannels();
     });
@@ -516,9 +520,9 @@ void WaveClip::LinkToOtherSource(WaveClip& srcClip)
 
 void WaveClip::TransferSequence(WaveClip& origClip, WaveClip& newClip)
 {
-    // Move right channel into result
+    // Move the last channel into result
     newClip.mSequences.resize(1);
-    newClip.mSequences[0] = move(origClip.mSequences[1]);
+    newClip.mSequences[0] = move(origClip.mSequences.back());
     // Delayed satisfaction of the class invariants after the empty construction
     newClip.CheckInvariants();
 }
@@ -543,13 +547,15 @@ void WaveClip::FixSplitCutlines(
 
 std::shared_ptr<WaveClip> WaveClip::SplitChannels()
 {
-    assert(NChannels() == 2);
+    assert(NChannels() >= 2);
+
+    const auto lastIdx = NChannels() - 1;
 
     // Make empty copies of this and all cutlines
     CreateToken token{ true };
     auto result = std::make_shared<WaveClip>(*this, GetFactory(), true, token);
 
-    // Move one Sequence
+    // Move the last channel's sequence into the result
     TransferSequence(*this, *result);
 
     // Must also do that for cutlines, which must be in correspondence, because
@@ -557,18 +563,34 @@ std::shared_ptr<WaveClip> WaveClip::SplitChannels()
     // And possibly too for cutlines inside of cutlines!
     FixSplitCutlines(mCutLines, result->mCutLines);
 
-    // Fix attachments in the new clip and assert consistency conditions between
-    // the clip and its cutlines
-    result->Attachments::ForEach([](WaveClipListener& attachment){
-        attachment.Erase(0);
-    });
+    // Fix attachments in the new clip: keep only the last channel's attachment
+    // by erasing all indices before it. Erase from 0 repeatedly, which
+    // renumbers each time, effectively keeping only the original last index.
+    for (size_t i = 0; i < lastIdx; ++i) {
+        result->Attachments::ForEach([](WaveClipListener& attachment){
+            attachment.Erase(0);
+        });
+    }
     assert(result->CheckInvariants());
 
-    // This call asserts invariants for this clip
-    DiscardRightChannel();
+    // Remove the last channel from this clip
+    {
+        const auto dropIdx = NChannels() - 1;
+        this->Attachments::ForEach([dropIdx](WaveClipListener& attachment){
+            attachment.Erase(dropIdx);
+        });
+        mSequences.pop_back();
+    }
+    for (auto& pCutline : mCutLines) {
+        // Each cutline must also drop its last channel
+        const auto cutDropIdx = pCutline->NChannels() - 1;
+        pCutline->Attachments::ForEach([cutDropIdx](WaveClipListener& attachment){
+            attachment.Erase(cutDropIdx);
+        });
+        pCutline->mSequences.pop_back();
+    }
+    assert(CheckInvariants());
 
-    // Assert postconditions
-    assert(NChannels() == 1);
     assert(result->NChannels() == 1);
     return result;
 }
@@ -604,7 +626,10 @@ void WaveClip::MakeStereo(WaveClip&& other, bool mustAlign)
 
 void WaveClip::MakeStereo()
 {
-    if (NChannels() == 2) {
+    // This no-arg variant is called by FixClipChannels to widen a clip
+    // to match the track's channel count. The name is legacy from stereo.
+    // For any clip with >= 2 channels, we consider it already wide enough.
+    if (NChannels() >= 2) {
         return;
     }
     constexpr auto mustAlign = true; // Since they're the same ...

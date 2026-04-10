@@ -149,13 +149,12 @@ void ChannelAttachmentsBase::MakeStereo(const std::shared_ptr<Track>& parent,
 
 void ChannelAttachmentsBase::SwapChannels(const std::shared_ptr<Track>& parent)
 {
-    assert(Size() <= 2);
-    if (mAttachments.empty()) {
+    // Swaps channels 0 and 1; valid for any track with >= 2 channels
+    if (mAttachments.size() < 2) {
         return;
     }
-    mAttachments.resize(2);
     std::swap(mAttachments[0], mAttachments[1]);
-    for (auto ii : { 0, 1 }) {
+    for (auto ii : { size_t(0), size_t(1) }) {
         if (const auto& pAttachment = mAttachments[ii]) {
             pAttachment->Reparent(parent, ii);
         }

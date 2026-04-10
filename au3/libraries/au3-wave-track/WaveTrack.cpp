@@ -131,12 +131,11 @@ WaveTrack::IntervalHolder GetRenderedCopy(
         const auto numSamplesToGet
             =limitSampleBufferSize(blockSize, totalNumOutSamples - numOutSamples);
         stretcher.GetSamples(container.Get(), numSamplesToGet);
-        constSamplePtr data[2];
-        data[0] = reinterpret_cast<constSamplePtr>(container.Get()[0]);
-        if (interval.NChannels() == 2) {
-            data[1] = reinterpret_cast<constSamplePtr>(container.Get()[1]);
+        std::vector<constSamplePtr> data(numChannels);
+        for (size_t ch = 0; ch < numChannels; ++ch) {
+            data[ch] = reinterpret_cast<constSamplePtr>(container.Get()[ch]);
         }
-        dst->Append(data, floatSample, numSamplesToGet, 1, widestSampleFormat);
+        dst->Append(data.data(), floatSample, numSamplesToGet, 1, widestSampleFormat);
         numOutSamples += numSamplesToGet;
         if (reportProgress) {
             reportProgress(
@@ -1081,19 +1080,19 @@ void WaveTrack::MakeMono()
 
 bool WaveTrack::MixDownToMono(const std::function<void(double)>& progress, const std::function<bool()>& cancel)
 {
-    WaveClipHolders stereoClips;
-    std::copy_if(mClips.begin(), mClips.end(), std::back_inserter(stereoClips),
-                 [](const auto& pClip){ return pClip->NChannels() == 2; });
+    WaveClipHolders multiChannelClips;
+    std::copy_if(mClips.begin(), mClips.end(), std::back_inserter(multiChannelClips),
+                 [](const auto& pClip){ return pClip->NChannels() > 1; });
 
-    if (stereoClips.empty()) {
+    if (multiChannelClips.empty()) {
         return true;
     }
 
     auto i = 0u;
     const auto clipProgress = [&](double p)
-    { progress((p + i) / stereoClips.size()); };
-    for (; i < stereoClips.size(); ++i) {
-        if (!stereoClips[i]->MakeMono(clipProgress, cancel)) {
+    { progress((p + i) / multiChannelClips.size()); };
+    for (; i < multiChannelClips.size(); ++i) {
+        if (!multiChannelClips[i]->MakeMono(clipProgress, cancel)) {
             return false;
         }
     }
@@ -1112,6 +1111,9 @@ bool WaveTrack::FixClipChannels(
     if (NChannels() == 1) {
         return MixDownToMono(progress, cancel);
     } else {
+        // Widen any mono clips to match the track's channel count.
+        // MakeStereo() no-arg currently only widens mono->stereo.
+        // TODO: for N>2 tracks, clips should be widened to N channels.
         for (const auto& clip : mClips) {
             clip->MakeStereo();
         }
@@ -1139,37 +1141,52 @@ auto WaveTrack::MonoToStereo() -> Holder
 auto WaveTrack::SplitChannels() -> std::vector<Holder>
 {
     std::vector<Holder> result;
-    if (NChannels() == 2) {
-        auto pOwner = GetOwner();
-        assert(pOwner); // pre
-
-        auto pLeftTrack = EmptyCopy(1);
-        auto pRightTrack = EmptyCopy(1);
-
-        for (auto& pClip : mClips) {
-            auto pRightClip = pClip->SplitChannels();
-            pLeftTrack->mClips.emplace_back(pClip);
-            pRightTrack->mClips.emplace_back(pRightClip);
-        }
-
-        pOwner->Append(pLeftTrack, true);
-        pOwner->Append(pRightTrack, true);
-
-        pLeftTrack->EraseChannelAttachments(1);
-        pRightTrack->EraseChannelAttachments(0);
-
-        result.push_back(pLeftTrack);
-        result.push_back(pRightTrack);
-    } else {
+    const auto n = NChannels();
+    if (n < 2) {
         // For mono tracks, just return the original track
         result.push_back(SharedPointer<WaveTrack>());
+        return result;
     }
+
+    auto pOwner = GetOwner();
+    assert(pOwner); // pre
+
+    // Split off channels from last to first, collecting mono tracks.
+    // Each SplitChannels() call on a clip removes the last channel.
+    std::vector<Holder> splitTracks;
+    for (size_t ch = n - 1; ch >= 1; --ch) {
+        auto pSplitTrack = EmptyCopy(1);
+        for (auto& pClip : mClips) {
+            auto pSplitClip = pClip->SplitChannels();
+            pSplitTrack->mClips.emplace_back(pSplitClip);
+        }
+        pOwner->Append(pSplitTrack, true);
+        splitTracks.push_back(pSplitTrack);
+    }
+
+    // What remains in this track is channel 0 (mono)
+    auto pFirstTrack = EmptyCopy(1);
+    for (auto& pClip : mClips) {
+        pFirstTrack->mClips.emplace_back(pClip);
+    }
+    pOwner->Append(pFirstTrack, true);
+    // Erase all channel attachments except 0
+    for (size_t i = n - 1; i >= 1; --i) {
+        pFirstTrack->EraseChannelAttachments(i);
+    }
+
+    // Build result: channel 0 first, then split channels in reverse order
+    result.push_back(pFirstTrack);
+    for (auto it = splitTracks.rbegin(); it != splitTracks.rend(); ++it) {
+        result.push_back(*it);
+    }
+
     return result;
 }
 
 void WaveTrack::SwapChannels()
 {
-    assert(NChannels() == 2);
+    assert(NChannels() >= 2);
     for (const auto& pClip: mClips) {
         pClip->SwapChannels();
     }
