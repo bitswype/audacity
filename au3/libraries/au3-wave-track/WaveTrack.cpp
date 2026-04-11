@@ -1151,34 +1151,52 @@ auto WaveTrack::SplitChannels() -> std::vector<Holder>
     auto pOwner = GetOwner();
     assert(pOwner); // pre
 
-    // Split off channels from last to first, collecting mono tracks.
-    // Each SplitChannels() call on a clip removes the last channel.
+    // Create N mono tracks: channel 0 gets the original clips,
+    // channels 1..N-1 get the split-off clips.
+    auto pFirstTrack = EmptyCopy(1);
     std::vector<Holder> splitTracks;
-    for (size_t ch = n - 1; ch >= 1; --ch) {
-        auto pSplitTrack = EmptyCopy(1);
-        for (auto& pClip : mClips) {
-            auto pSplitClip = pClip->SplitChannels();
-            pSplitTrack->mClips.emplace_back(pSplitClip);
-        }
-        pOwner->Append(pSplitTrack, true);
-        splitTracks.push_back(pSplitTrack);
+    for (size_t ch = 1; ch < n; ++ch) {
+        splitTracks.push_back(EmptyCopy(1));
     }
 
-    // What remains in this track is channel 0 (mono)
-    auto pFirstTrack = EmptyCopy(1);
+    // Split clips: peel off channels N-1..1 from each clip,
+    // building each split track's clip list.
+    // After this loop, each original clip has only channel 0 remaining.
     for (auto& pClip : mClips) {
+        for (size_t ch = n - 1; ch >= 1; --ch) {
+            auto pSplitClip = pClip->SplitChannels();
+            splitTracks[ch - 1]->mClips.emplace_back(pSplitClip);
+        }
         pFirstTrack->mClips.emplace_back(pClip);
     }
+
+    // Append all new tracks to the TrackList: channel 0 first
     pOwner->Append(pFirstTrack, true);
-    // Erase all channel attachments except 0
+    for (auto& pSplitTrack : splitTracks) {
+        pOwner->Append(pSplitTrack, true);
+    }
+
+    // Fix channel attachments: EmptyCopy(1) copied N-channel attachments
+    // from the original track. Each new track needs only its own channel.
+    // Channel 0 track: erase attachments for channels 1..N-1
     for (size_t i = n - 1; i >= 1; --i) {
         pFirstTrack->EraseChannelAttachments(i);
     }
+    // Channel ch track: erase all attachments except ch, by first erasing
+    // indices above ch (from top), then indices below ch (from 0).
+    for (size_t ch = 1; ch < n; ++ch) {
+        for (size_t i = n - 1; i > ch; --i) {
+            splitTracks[ch - 1]->EraseChannelAttachments(i);
+        }
+        for (size_t i = 0; i < ch; ++i) {
+            splitTracks[ch - 1]->EraseChannelAttachments(0);
+        }
+    }
 
-    // Build result: channel 0 first, then split channels in reverse order
+    // Build result: channel 0 first, then channels 1..N-1
     result.push_back(pFirstTrack);
-    for (auto it = splitTracks.rbegin(); it != splitTracks.rend(); ++it) {
-        result.push_back(*it);
+    for (auto& pSplitTrack : splitTracks) {
+        result.push_back(pSplitTrack);
     }
 
     return result;

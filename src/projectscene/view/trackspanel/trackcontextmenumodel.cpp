@@ -100,6 +100,31 @@ MenuItemList TrackContextMenuModel::makeMonoTrackItems()
     return items;
 }
 
+MenuItemList TrackContextMenuModel::makeMultiChannelTrackItems()
+{
+    // Multi-channel tracks: no swap (stereo concept), single split action
+    // that produces one centered mono track per channel.
+    MenuItemList items {
+        makeItemWithArg("track-rename"),
+        makeItemWithArg("track-duplicate"),
+        makeItemWithArg("track-delete"),
+        makeSeparator(),
+        makeMenu(muse::TranslatableString(TRANSLATABLE_STRING_CONTEXT, "Move track"), makeTrackMoveItems()),
+        makeMenu(muse::TranslatableString(TRANSLATABLE_STRING_CONTEXT, "Track view"), makeTrackViewItems()),
+        makeMenu(muse::TranslatableString(TRANSLATABLE_STRING_CONTEXT, "Track color"), makeTrackColorItems(), TRACK_COLOR_MENU_ID),
+        makeItemWithArg("toggle-vertical-rulers"),
+        makeMenu(muse::TranslatableString(TRANSLATABLE_STRING_CONTEXT, "Meters && monitoring"), makeMeterMonitoringItems()),
+        makeSeparator(),
+        makeItemWithArg("track-split-stereo-to-center"),
+        makeSeparator(),
+        makeMenu(muse::TranslatableString(TRANSLATABLE_STRING_CONTEXT, "Format:"), makeTrackFormatItems(), TRACK_FORMAT_MENU_ID),
+        makeMenu(muse::TranslatableString(TRANSLATABLE_STRING_CONTEXT, "Rate:"), makeTrackRateItems(), TRACK_RATE_MENU_ID),
+        makeItemWithArg("track-resample"),
+    };
+
+    return items;
+}
+
 MenuItemList TrackContextMenuModel::makeLabelTrackItems()
 {
     return {
@@ -151,8 +176,7 @@ void TrackContextMenuModel::load()
         setItems(makeStereoTrackItems());
         break;
     case trackedit::TrackType::MultiChannel:
-        // Multi-channel tracks get the same menu as stereo minus split actions
-        setItems(makeStereoTrackItems());
+        setItems(makeMultiChannelTrackItems());
         break;
     case trackedit::TrackType::Label:
         setItems(makeLabelTrackItems());
