@@ -96,7 +96,10 @@ void Au3AudioDevicesProvider::init()
 
     muse::settings()->valueChanged(PLAYBACK_DEVICE).onReceive(nullptr, [this](const muse::Val& val) {
         Au3AudioDevicesProvider::handleDeviceChange();
+        initOutputChannels();
         m_audioOutputDeviceChanged.notify();
+        m_outputChannelsListChanged.notify();
+        m_outputChannelsChanged.notify();
     });
 
     muse::settings()->valueChanged(RECORDING_DEVICE).onReceive(nullptr, [this](const muse::Val& val) {
