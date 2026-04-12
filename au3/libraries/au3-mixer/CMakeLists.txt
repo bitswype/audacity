@@ -24,6 +24,10 @@ set( TARGET au3-mixer )
 set( SOURCES
    AudioIOSequences.cpp
    AudioIOSequences.h
+   ChannelRouting.cpp
+   ChannelRouting.h
+   MixOutput.cpp
+   MixOutput.h
    DownmixSource.cpp
    DownmixSource.h
    DownmixStage.cpp
@@ -51,3 +55,7 @@ set( LIBRARIES
 audacity_library( ${TARGET} "${SOURCES}" "${LIBRARIES}"
    "" ""
 )
+
+if(MUSE_ENABLE_UNIT_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+   add_subdirectory(tests)
+endif()

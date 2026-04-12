@@ -245,12 +245,12 @@ Mixer::NeedsDither(bool needsDither, double rate) const
                    && sequence.NChannels() > 1 && mNumChannels == 1) {
             needsDither = true;
         } else if (mApplyVolume != ApplyVolume::Discard) {
-            /// TODO: more-than-two-channels
-            for (auto c : { 0, 1 }) {
+            for (size_t c = 0; c < sequence.NChannels(); ++c) {
                 const auto volume = sequence.GetChannelVolume(c);
                 if (!(volume == 0.0 || volume == 1.0)) {
                     // Fractional volume may be applied even in MixSameRate
                     needsDither = true;
+                    break;
                 }
             }
         }
@@ -423,11 +423,13 @@ std::unique_ptr<EffectStage>& Mixer::RegisterEffectStage(
 {
     // Make a mutable copy of stage.settings
     auto& settings = mSettings.emplace_back(stage.settings);
-    // TODO: more-than-two-channels
-    // Like mFloatBuffers but padding not needed for soxr
-    // Allocate one extra buffer to hold dummy zero inputs
-    // (Issue 3854)
-    auto& stageInput = mStageBuffers.emplace_back(3, mBufferSize, 1);
+    // Allocate one extra buffer to hold dummy zero inputs (Issue 3854).
+    // numChannels here is already the source track's channel count (per-track
+    // path) or the output channel count (master path), so unlike DownmixStage
+    // we don't need to scan multiple sources for the widest.
+    auto& stageInput = mStageBuffers.emplace_back(
+       static_cast<unsigned>(std::max(size_t(3), numChannels + 1)),
+       mBufferSize, 1);
     const auto& factory = [&stage] {
         // Avoid unnecessary repeated calls to the factory
         return stage.mpFirstInstance ? move(stage.mpFirstInstance)

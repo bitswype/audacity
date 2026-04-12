@@ -43,13 +43,17 @@ DownmixStage::DownmixStage(std::vector<std::unique_ptr<DownmixSource> > downmixS
                            size_t bufferSize,
                            ApplyVolume applyGain)
     : mDownmixSources(std::move(downmixSources))
-    // PRL:  Bug2536: see other comments below for the last, padding argument
-    // TODO: more-than-two-channels
-    // Issue 3565 workaround:  allocate one extra buffer when applying a
-    // GVerb effect stage.  It is simply discarded
-    // See also issue 3854, when the number of out channels expected by the
-    // plug-in is yet larger
-    , mFloatBuffers{3, bufferSize, 1, 1}
+    // Intermediate buffer needs enough channels for the widest source we'll
+    // process.  +1 for the GVerb workaround (Issues 3565, 3854) that needs
+    // one extra buffer that is simply discarded.  Minimum 3 for backward
+    // compatibility with stereo (the old hardcoded value).
+    , mFloatBuffers{[this, numChannels]() -> unsigned {
+        size_t maxSrc = 0;
+        for (const auto& s : mDownmixSources)
+           maxSrc = std::max(maxSrc, s->NChannels());
+        return static_cast<unsigned>(
+           std::max(size_t(3), std::max(numChannels, maxSrc) + 1));
+    }(), bufferSize, 1, 1}
     , mNumChannels(numChannels)
     , mApplyVolume(applyGain)
 {
@@ -70,8 +74,6 @@ bool DownmixStage::AcceptsBlockSize(size_t blockSize) const
 
 std::optional<size_t> DownmixStage::Acquire(Buffers& data, size_t maxToProcess)
 {
-    // TODO: more-than-two-channels
-    auto maxChannels = std::max(2u, mFloatBuffers.Channels());
     const auto channelFlags = stackAllocate(unsigned char, mNumChannels);
     const auto volumes = stackAllocate(float, mNumChannels);
     if (mApplyVolume == ApplyVolume::Discard) {
@@ -96,7 +98,10 @@ std::optional<size_t> DownmixStage::Acquire(Buffers& data, size_t maxToProcess)
 
         // Insert effect stages here!  Passing them all channels of the track
 
-        const auto limit = std::min<size_t>(downmixSource->NChannels(), maxChannels);
+        // mFloatBuffers is sized at construction to hold the widest source.
+        // Guard against post-construction source changes or programming errors.
+        const auto limit = std::min<size_t>(
+           downmixSource->NChannels(), mFloatBuffers.Channels());
         for (size_t j = 0; j < limit; ++j) {
             const auto pFloat = (const float*)mFloatBuffers.GetReadPosition(j);
             if (mApplyVolume != ApplyVolume::Discard) {
