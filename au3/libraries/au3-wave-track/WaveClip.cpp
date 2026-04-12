@@ -481,10 +481,14 @@ size_t WaveClip::GetAppendBufferLen(size_t iChannel) const
 
 void WaveClip::DiscardRightChannel()
 {
-    mSequences.resize(1);
-    this->Attachments::ForEach([](WaveClipListener& attachment){
-        attachment.Erase(1);
-    });
+    // Erase all channels beyond 0, from last to first
+    while (mSequences.size() > 1) {
+        const auto last = mSequences.size() - 1;
+        this->Attachments::ForEach([last](WaveClipListener& attachment){
+            attachment.Erase(last);
+        });
+        mSequences.pop_back();
+    }
     for (auto& pCutline : mCutLines) {
         pCutline->DiscardRightChannel();
     }
@@ -494,7 +498,7 @@ void WaveClip::DiscardRightChannel()
 
 void WaveClip::SwapChannels()
 {
-    assert(NChannels() == 2);
+    assert(NChannels() >= 2);
     this->Attachments::ForEach([](WaveClipListener& attachment){
         attachment.SwapChannels();
     });
@@ -516,9 +520,9 @@ void WaveClip::LinkToOtherSource(WaveClip& srcClip)
 
 void WaveClip::TransferSequence(WaveClip& origClip, WaveClip& newClip)
 {
-    // Move right channel into result
+    // Move the last channel into result
     newClip.mSequences.resize(1);
-    newClip.mSequences[0] = move(origClip.mSequences[1]);
+    newClip.mSequences[0] = move(origClip.mSequences.back());
     // Delayed satisfaction of the class invariants after the empty construction
     newClip.CheckInvariants();
 }
@@ -543,13 +547,15 @@ void WaveClip::FixSplitCutlines(
 
 std::shared_ptr<WaveClip> WaveClip::SplitChannels()
 {
-    assert(NChannels() == 2);
+    assert(NChannels() >= 2);
+
+    const auto lastIdx = NChannels() - 1;
 
     // Make empty copies of this and all cutlines
     CreateToken token{ true };
     auto result = std::make_shared<WaveClip>(*this, GetFactory(), true, token);
 
-    // Move one Sequence
+    // Move the last channel's sequence into the result
     TransferSequence(*this, *result);
 
     // Must also do that for cutlines, which must be in correspondence, because
@@ -557,33 +563,52 @@ std::shared_ptr<WaveClip> WaveClip::SplitChannels()
     // And possibly too for cutlines inside of cutlines!
     FixSplitCutlines(mCutLines, result->mCutLines);
 
-    // Fix attachments in the new clip and assert consistency conditions between
-    // the clip and its cutlines
-    result->Attachments::ForEach([](WaveClipListener& attachment){
-        attachment.Erase(0);
-    });
+    // Fix attachments in the new clip: keep only the last channel's attachment
+    // by erasing all indices before it. Erase from 0 repeatedly, which
+    // renumbers each time, effectively keeping only the original last index.
+    for (size_t i = 0; i < lastIdx; ++i) {
+        result->Attachments::ForEach([](WaveClipListener& attachment){
+            attachment.Erase(0);
+        });
+    }
     assert(result->CheckInvariants());
 
-    // This call asserts invariants for this clip
-    DiscardRightChannel();
+    // Remove the last channel from this clip
+    {
+        const auto dropIdx = NChannels() - 1;
+        this->Attachments::ForEach([dropIdx](WaveClipListener& attachment){
+            attachment.Erase(dropIdx);
+        });
+        mSequences.pop_back();
+    }
+    for (auto& pCutline : mCutLines) {
+        // Each cutline must also drop its last channel
+        const auto cutDropIdx = pCutline->NChannels() - 1;
+        pCutline->Attachments::ForEach([cutDropIdx](WaveClipListener& attachment){
+            attachment.Erase(cutDropIdx);
+        });
+        pCutline->mSequences.pop_back();
+    }
+    assert(CheckInvariants());
 
-    // Assert postconditions
-    assert(NChannels() == 1);
     assert(result->NChannels() == 1);
     return result;
 }
 
 void WaveClip::MakeStereo(WaveClip&& other, bool mustAlign)
 {
-    assert(NChannels() == 1);
-    assert(other.NChannels() == 1);
+    // Removed NChannels() == 1 preconditions: supports appending channels
+    // from other to a clip that already has >1 channel.
+    assert(other.NChannels() >= 1);
     assert(GetSampleFormats() == other.GetSampleFormats());
     assert(GetFactory() == other.GetFactory());
     assert(!mustAlign || GetNumSamples() == other.GetNumSamples());
 
     mCutLines.clear();
-    mSequences.resize(2);
-    mSequences[1] = move(other.mSequences[0]);
+    // Append all sequences from other instead of hardcoding slot [1]
+    for (auto& seq : other.mSequences) {
+        mSequences.push_back(move(seq));
+    }
 
     this->Attachments::ForCorresponding(other,
                                         [mustAlign](WaveClipListener* pLeft, WaveClipListener* pRight){
@@ -599,13 +624,24 @@ void WaveClip::MakeStereo(WaveClip&& other, bool mustAlign)
     }
 }
 
+void WaveClip::WidenToChannels(size_t nChannels)
+{
+    // Widen a clip to the given channel count by duplicating channel 0.
+    // Called by FixClipChannels to match clip width to the track's width.
+    while (NChannels() < nChannels) {
+        // Create a full copy, then strip to mono (channel 0 only).
+        // This ensures attachments are consistent before MakeStereo.
+        auto mono = WaveClip(*this, GetFactory(), true, CreateToken {});
+        mono.DiscardRightChannel();
+        constexpr auto mustAlign = true;
+        MakeStereo(std::move(mono), mustAlign);
+    }
+}
+
 void WaveClip::MakeStereo()
 {
-    if (NChannels() == 2) {
-        return;
-    }
-    constexpr auto mustAlign = true; // Since they're the same ...
-    MakeStereo(WaveClip(*this, GetFactory(), true, CreateToken {}), mustAlign);
+    // Legacy convenience: widen mono to stereo.
+    WidenToChannels(2);
 }
 
 bool WaveClip::MakeMono(const std::function<void(double)>& progress, const std::function<bool()>& cancel)
@@ -614,25 +650,27 @@ bool WaveClip::MakeMono(const std::function<void(double)>& progress, const std::
         return true;
     }
     constexpr auto blockSize = 1024;
+    const auto nCh = NChannels();
     auto n = 0;
 
     auto mix = std::make_unique<Sequence>(GetFactory(), SampleFormats { floatSample, floatSample });
-    std::optional<AudioSegmentSampleView> leftView;
-    std::optional<AudioSegmentSampleView> rightView;
     const auto nSamples = mSequences[0]->GetNumSamples();
     while (n < nSamples)
     {
         const auto len
             =std::min<sampleCount>(blockSize, nSamples - n)
               .as_size_t();
-        leftView.emplace(mSequences[0]->GetFloatSampleView(n, len, true));
-        rightView.emplace(mSequences[1]->GetFloatSampleView(n, len, true));
         std::array<float, blockSize> buffer;
         buffer.fill(0);
-        leftView->AddTo(buffer.data(), len);
-        rightView->AddTo(buffer.data(), len);
+        // Sum all channels into the buffer
+        for (size_t ch = 0; ch < nCh; ++ch) {
+            auto view = mSequences[ch]->GetFloatSampleView(n, len, true);
+            view.AddTo(buffer.data(), len);
+        }
+        // Divide by the actual channel count
+        const float divisor = static_cast<float>(nCh);
         for (size_t i = 0; i < len; ++i) {
-            buffer[i] /= 2;
+            buffer[i] /= divisor;
         }
         mix->Append(
             reinterpret_cast<constSamplePtr>(buffer.data()), floatSample, len, 1,

@@ -26,10 +26,8 @@ au::trackedit::TrackType trackType(const Au3Track* track)
     case 2:
         return au::trackedit::TrackType::Stereo;
     default:
-        break;
+        return au::trackedit::TrackType::MultiChannel;
     }
-
-    return au::trackedit::TrackType::Undefined;
 }
 
 au::trackedit::TrackFormat trackFormat(const Au3Track* track)
@@ -111,6 +109,7 @@ au::trackedit::Track DomConverter::track(const Au3Track* track)
     au4t.id = track->GetId();
     au4t.title = wxToString(track->GetName());
     au4t.type = trackType(track);
+    au4t.channelCount = static_cast<int>(track->NChannels());
 
     au4t.colorIndex = TrackColor::Get(track).GetColorIndex();
     if (au4t.colorIndex == 0) {

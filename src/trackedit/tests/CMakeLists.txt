@@ -21,6 +21,8 @@ set(MODULE_TEST_SRC
 
     ${CMAKE_CURRENT_LIST_DIR}/changedetection_tests.cpp
     ${CMAKE_CURRENT_LIST_DIR}/au3trackeditclipboard_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/wavetrack_nchannel_tests.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/nchannel_clip_and_serialization_tests.cpp
     )
 
 set(MODULE_TEST_LINK

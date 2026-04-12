@@ -16,6 +16,7 @@ enum class TrackType {
     Undefined,
     Mono,
     Stereo,
+    MultiChannel,
     Label
 };
 
@@ -58,6 +59,7 @@ struct Track {
     TrackId id;
     muse::String title;
     TrackType type = TrackType::Undefined;
+    int channelCount = 0;
     ClipColorIndex colorIndex = 1;
     TrackFormat format = TrackFormat::Undefined;
     uint64_t rate = 0;
