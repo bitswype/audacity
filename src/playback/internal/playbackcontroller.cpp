@@ -23,6 +23,7 @@ static const ActionQuery PLAYBACK_CHANGE_AUDIO_API_QUERY("action://playback/chan
 static const ActionQuery PLAYBACK_CHANGE_PLAYBACK_DEVICE_QUERY("action://playback/change-playback-device");
 static const ActionQuery PLAYBACK_CHANGE_RECORDING_DEVICE_QUERY("action://playback/change-recording-device");
 static const ActionQuery PLAYBACK_CHANGE_INPUT_CHANNELS_QUERY("action://playback/change-input-channels");
+static const ActionQuery PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY("action://playback/change-output-channels");
 
 static const ActionCode PAN_CODE("pan");
 static const ActionCode REPEAT_CODE("repeat");
@@ -43,6 +44,7 @@ void PlaybackController::init()
     dispatcher()->reg(this, PLAYBACK_CHANGE_PLAYBACK_DEVICE_QUERY, this, &PlaybackController::setAudioOutputDevice);
     dispatcher()->reg(this, PLAYBACK_CHANGE_RECORDING_DEVICE_QUERY, this, &PlaybackController::setAudioInputDevice);
     dispatcher()->reg(this, PLAYBACK_CHANGE_INPUT_CHANNELS_QUERY, this, &PlaybackController::setInputChannels);
+    dispatcher()->reg(this, PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY, this, &PlaybackController::setOutputChannels);
 
     dispatcher()->reg(this, REPEAT_CODE, this, &PlaybackController::togglePlayRepeats);
     dispatcher()->reg(this, PAN_CODE, this, &PlaybackController::toggleAutomaticallyPan);
@@ -689,6 +691,17 @@ void PlaybackController::setInputChannels(const muse::actions::ActionQuery& q)
     int index = q.param("input-channels_index").toInt();
 
     audioDevicesProvider()->setInputChannels(index);
+}
+
+void PlaybackController::setOutputChannels(const muse::actions::ActionQuery& q)
+{
+    IF_ASSERT_FAILED(q.contains("output-channels_index")) {
+        return;
+    }
+
+    int index = q.param("output-channels_index").toInt();
+
+    audioDevicesProvider()->setOutputChannels(index);
 }
 
 void PlaybackController::rescanAudioDevices()
