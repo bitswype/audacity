@@ -670,6 +670,16 @@ bool WaveTrack::LinkConsistencyFix(const bool doFix)
             const auto nZips = (mLegacyNChannels > 2)
                ? (mLegacyNChannels - 1) : 1;
             for (int i = 0; i < nZips; ++i) {
+                // Guard against corrupted files: if the next track in the
+                // list doesn't exist, stop zipping and report the error.
+                auto pOwner = GetOwner();
+                if (pOwner) {
+                    auto iter = pOwner->Find(this);
+                    if (++iter == pOwner->end()) {
+                        err = true;
+                        break;
+                    }
+                }
                 ZipClips();
             }
             mLegacyNChannels = 0;

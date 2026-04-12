@@ -49,13 +49,11 @@ void ImportUtils::ShowMessageBox(const TranslatableString& message, const Transl
 
 int ImportUtils::RequiredTrackCountFromChannels(int channels) noexcept
 {
-    if (channels <= 2) {
-        // mono and stereo channel config will fit a single track
-        return 1;
+    if (channels <= 0) {
+        return 0;
     }
-
-    // split multi-channel into separated mono tracks
-    return channels;
+    // All channel counts produce a single N-channel track
+    return 1;
 }
 
 void ImportUtils::FinalizeImport(TrackHolders& outTracks, const std::vector<WaveTrack::Holder>& importedStreams)
