@@ -561,18 +561,23 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
         // regardless of source formats, we always mix to float
         playbackParameters.sampleFormat = paFloat32;
         playbackParameters.hostApiSpecificStreamInfo = NULL;
-        // Open with the device's native channel count to bypass PortAudio's
+
+        // Clamp requested channel count to device capability
+        if (mNumPlaybackChannels > static_cast<size_t>(playbackDeviceInfo->maxOutputChannels)) {
+            mNumPlaybackChannels = playbackDeviceInfo->maxOutputChannels;
+        }
+
+        const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(playbackDeviceInfo->hostApi);
+        bool isWASAPI = (hostInfo && hostInfo->type == paWASAPI);
+        bool isMME = (hostInfo && hostInfo->type == paMME);
+        bool isALSA = (hostInfo && hostInfo->type == paALSA);
+
         // PortAudio's ALSA backend DoChannelAdaption duplicates the last
         // channel of odd-count streams when numHostChannels is even.
         // Bypass this by opening with the device's native channel count
         // on ALSA and zeroing unused channels ourselves.
         // Other backends (CoreAudio, WASAPI, ASIO, MME) do not have
         // this behavior and should open with the requested count.
-        const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(playbackDeviceInfo->hostApi);
-        bool isWASAPI = (hostInfo && hostInfo->type == paWASAPI);
-        bool isMME = (hostInfo && hostInfo->type == paMME);
-        bool isALSA = (hostInfo && hostInfo->type == paALSA);
-
         if (isALSA) {
             mDevicePlaybackChannels = playbackDeviceInfo->maxOutputChannels;
         } else {
@@ -870,7 +875,7 @@ void AudioIO::StartMonitoring(const AudioIOStartStreamOptions& options)
     int playbackChannels = 0;
 
     if (mSoftwarePlaythrough) {
-        playbackChannels = 2;
+        playbackChannels = std::max(1, AudioIOPlaybackChannels.Read());
     }
 
     // FIXME: TRAP_ERR StartPortAudioStream (a PaError may be present)
@@ -1050,11 +1055,14 @@ int AudioIO::StartStream(const TransportSequences& sequences,
 
     if (sequences.playbackSequences.size() > 0
         || sequences.otherPlayableSequences.size() > 0) {
-        playbackChannels = 2;
+        // Use the configured playback channel count (default: 2 for stereo).
+        // Clamped to the device's actual capability in StartPortAudioStream.
+        playbackChannels = std::max(1, AudioIOPlaybackChannels.Read());
     }
 
     if (mSoftwarePlaythrough) {
-        playbackChannels = 2;
+        playbackChannels = std::max(playbackChannels,
+            static_cast<unsigned int>(std::max(1, AudioIOPlaybackChannels.Read())));
     }
 
     if (mCaptureSequences.size() > 0) {
@@ -1372,6 +1380,31 @@ bool AudioIO::AllocateBuffers(
                             mScratchPointers.push_back(
                                 reinterpret_cast<float*>(buffer.ptr()));
                         }
+
+                        // Pre-allocate callback temp buffers on the heap.
+                        // Replaces stackAllocate (alloca) in FillOutputBuffers
+                        // which overflows the stack at high channel counts
+                        // (~100KB at 8ch, ~1.5MB at 32ch).
+                        mCallbackTempBuffers.resize(mNumPlaybackChannels);
+                        mCallbackTempPointers.resize(mNumPlaybackChannels);
+                        for (size_t c = 0; c < mNumPlaybackChannels; ++c) {
+                            mCallbackTempBuffers[c].resize(playbackBufferSize, 0.0f);
+                            mCallbackTempPointers[c] = mCallbackTempBuffers[c].data();
+                        }
+
+                        // Pre-allocated zero buffer for identity routing.
+                        // Avoids per-track heap allocation on audio feeder thread.
+                        mSilenceBuffer.assign(playbackBufferSize, 0.0f);
+
+                        // Pre-allocated scratch buffers for AudioCallback.
+                        // Replaces stackAllocate (alloca) which overflows
+                        // the callback thread stack at high channel counts.
+                        const auto maxChannels = std::max(
+                            mNumPlaybackChannels, mNumCaptureChannels);
+                        mCallbackScratchBuffer.resize(
+                            playbackBufferSize * maxChannels, 0.0f);
+                        mCallbackMeterBuffer.resize(
+                            playbackBufferSize * mDevicePlaybackChannels, 0.0f);
                     }
                 }
 
@@ -1380,6 +1413,16 @@ bool AudioIO::AllocateBuffers(
                     mPlaybackBuffers.end(),
                     [=]{ return std::make_unique<RingBuffer>(floatSample, playbackBufferSize); }
                     );
+
+                // Compute per-track output channel assignments
+                {
+                    std::vector<size_t> trackChannelCounts;
+                    trackChannelCounts.reserve(mPlaybackSequences.size());
+                    for (const auto& seq : mPlaybackSequences)
+                        trackChannelCounts.push_back(seq ? seq->NChannels() : 0);
+                    mTrackChannelAssignments = ComputeChannelAssignments(
+                        trackChannelCounts, mNumPlaybackChannels);
+                }
 
                 mPlaybackMixers.clear();
 
@@ -1451,9 +1494,8 @@ bool AudioIO::AllocateBuffers(
             const size_t playbackBufferSize = std::max((size_t)lrint(
                                                            mRate * mPlaybackRingBufferSecs.count()), mHardwarePlaybackLatencyFrames * 2);
             for (auto& track : mPlaybackTracks) {
-                for (auto& buffer : track.mBuffers) {
-                    buffer.reset();
-                }
+                track.mBuffers.clear();
+                track.mBuffers.resize(mNumPlaybackChannels);
 
                 for (size_t i = 0; i < mNumPlaybackChannels; ++i) {
                     track.mBuffers[i] = std::make_unique<RingBuffer>(
@@ -1487,6 +1529,16 @@ bool AudioIO::AllocateBuffers(
                         =std::make_unique<Resample>(true, mFactor, mFactor);
                     // constant rate resampling
                 }
+            }
+
+            // Ensure AudioCallback scratch buffer exists for capture format
+            // conversion (SamplesToFloats) even in capture-only mode where
+            // the playback allocation path above was skipped.
+            if (mCallbackScratchBuffer.empty() && mNumCaptureChannels > 0) {
+                auto captureBufferSize
+                    = (size_t)(mRate * mCaptureRingBufferSecs + 0.5);
+                mCallbackScratchBuffer.resize(
+                    captureBufferSize * mNumCaptureChannels, 0.0f);
             }
         }
         catch (std::bad_alloc&)
@@ -1523,6 +1575,12 @@ void AudioIO::StartStreamCleanup(bool bOnlyBuffers)
     mPlaybackTracks.clear();
     mScratchBuffers.clear();
     mScratchPointers.clear();
+    mCallbackTempBuffers.clear();
+    mCallbackTempPointers.clear();
+    mCallbackScratchBuffer.clear();
+    mCallbackMeterBuffer.clear();
+    mSilenceBuffer.clear();
+    mTrackChannelAssignments.clear();
     mPlaybackMixers.clear();
     mCaptureBuffers.clear();
     mResample.clear();
@@ -2100,7 +2158,7 @@ bool AudioIO::ProcessPlaybackSlices(
 
     // remember initial processing buffer offsets
     // they may be different depending on latencies
-    const auto processingBufferOffsets = stackAllocate(size_t, mProcessingBuffers.size());
+    std::vector<size_t> processingBufferOffsets(mProcessingBuffers.size());
     for (unsigned n = 0; n < mProcessingBuffers.size(); ++n) {
         processingBufferOffsets[n] = mProcessingBuffers[n].size();
     }
@@ -2182,7 +2240,7 @@ bool AudioIO::ProcessPlaybackSlices(
     // Do any realtime effect processing for each individual sample source,
     // after all the little slices have been written.
     if (pScope) {
-        const auto pointers = stackAllocate(float*, mNumPlaybackChannels);
+        std::vector<float*> pointers(mNumPlaybackChannels);
 
         int bufferIndex = 0;
         for (const auto& seq : mPlaybackSequences) {
@@ -2266,37 +2324,107 @@ bool AudioIO::ProcessPlaybackSlices(
 
     {
         unsigned bufferIndex = 0;
+        unsigned trackIndex = 0;
         for (auto& track :  mPlaybackTracks) {
             auto seq = track.mSequence;
             if (!seq) {
+                ++trackIndex;
                 continue;
             }
 
             auto& buffers = track.mBuffers;
             const auto numChannels = seq->NChannels();
-            if (numChannels > 1) {
-                for (unsigned n = 0, cnt = std::min(numChannels, mNumPlaybackChannels); n < cnt; ++n) {
+
+            // Get the routing assignment for this track
+            const int assignedOutput =
+                (trackIndex < mTrackChannelAssignments.size())
+                ? mTrackChannelAssignments[trackIndex].outputChannel
+                : -1;
+
+            if (assignedOutput >= 0 && numChannels > 1) {
+                // Multi-channel track with assigned output: identity routing
+                // from assigned output channel onwards
+                const auto startCh = static_cast<unsigned>(assignedOutput);
+                const auto cnt = std::min(
+                    numChannels,
+                    static_cast<size_t>(mNumPlaybackChannels - startCh));
+                for (unsigned n = 0; n < cnt; ++n) {
+                    const float volume = seq->GetChannelVolume(n);
+                    for (unsigned i = 0; i < samplesAvailable; ++i) {
+                        mProcessingBuffers[bufferIndex + n][i] *= volume;
+                        mMasterBuffers[startCh + n][i] +=
+                            mProcessingBuffers[bufferIndex + n][i];
+                    }
+
+                    buffers[startCh + n]->Put(
+                        reinterpret_cast<constSamplePtr>(
+                            mProcessingBuffers[bufferIndex + n].data()),
+                        floatSample, samplesAvailable, 0);
+                }
+                // Silence the other per-track ring buffers
+                for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
+                    if (n < startCh || n >= startCh + cnt) {
+                        buffers[n]->Put(
+                            reinterpret_cast<constSamplePtr>(mSilenceBuffer.data()),
+                            floatSample, samplesAvailable, 0);
+                    }
+                }
+            } else if (numChannels > 1 && assignedOutput < 0) {
+                // Multi-channel track, legacy routing (stereo)
+                const auto cnt = std::min(numChannels, mNumPlaybackChannels);
+                for (unsigned n = 0; n < cnt; ++n) {
                     const float volume = seq->GetChannelVolume(n);
                     for (unsigned i = 0; i < samplesAvailable; ++i) {
                         mProcessingBuffers[bufferIndex + n][i] *= volume;
                         mMasterBuffers[n][i] += mProcessingBuffers[bufferIndex + n][i];
                     }
 
-                    //Copy per track data to ring buffers
                     buffers[n]->Put(
-                        reinterpret_cast<constSamplePtr>(mProcessingBuffers[bufferIndex + n].data()),
-                        floatSample,
-                        samplesAvailable, 0);
+                        reinterpret_cast<constSamplePtr>(
+                            mProcessingBuffers[bufferIndex + n].data()),
+                        floatSample, samplesAvailable, 0);
+                }
+                // Fill silence into per-track ring buffers beyond the track's
+                // channel count to prevent ring buffer desync at Unput time.
+                for (unsigned n = cnt; n < mNumPlaybackChannels; ++n) {
+                    buffers[n]->Put(
+                        reinterpret_cast<constSamplePtr>(mSilenceBuffer.data()),
+                        floatSample, samplesAvailable, 0);
+                }
+            } else if (numChannels == 1 && assignedOutput >= 0) {
+                // Mono track with assigned output channel
+                const auto targetChannel = static_cast<unsigned>(assignedOutput);
+                const float volume = seq->GetChannelVolume(0);
+                for (unsigned i = 0; i < samplesAvailable; ++i) {
+                    mMasterBuffers[targetChannel][i] +=
+                        mProcessingBuffers[bufferIndex][i] * volume;
+                }
+
+                for (unsigned i = 0; i < samplesAvailable; ++i) {
+                    mProcessingBuffers[bufferIndex][i] *= volume;
+                }
+
+                buffers[targetChannel]->Put(
+                    reinterpret_cast<constSamplePtr>(
+                        mProcessingBuffers[bufferIndex].data()),
+                    floatSample, samplesAvailable, 0);
+
+                // Silence other per-track ring buffers
+                for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
+                    if (n != targetChannel) {
+                        buffers[n]->Put(
+                            reinterpret_cast<constSamplePtr>(mSilenceBuffer.data()),
+                            floatSample, samplesAvailable, 0);
+                    }
                 }
             } else if (numChannels == 1) {
+                // Mono track, legacy stereo behavior: duplicate to all outputs
                 float maxVolume = 0.0f;
 
                 for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
                     maxVolume = std::max(maxVolume, seq->GetChannelVolume(n));
                 }
 
-                // Mix mono source is duplicated into every output channel
-                // accounting for panning
                 for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
                     const float volume = seq->GetChannelVolume(n);
                     for (unsigned i = 0; i < samplesAvailable; ++i) {
@@ -2309,7 +2437,6 @@ bool AudioIO::ProcessPlaybackSlices(
                 }
 
                 for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
-                    //Copy per track data to ring buffers
                     buffers[n]->Put(
                         reinterpret_cast<constSamplePtr>(mProcessingBuffers[bufferIndex].data()),
                         floatSample,
@@ -2317,6 +2444,7 @@ bool AudioIO::ProcessPlaybackSlices(
                 }
             }
             bufferIndex += seq->NChannels();
+            ++trackIndex;
         }
     }
 
@@ -2330,14 +2458,14 @@ bool AudioIO::ProcessPlaybackSlices(
     // previous step
     size_t masterBufferOffset = 0;//The amount of samples to be discarded
     if (pScope) {
-        const auto pointers = stackAllocate(float*, mNumPlaybackChannels);
+        std::vector<float*> pointers(mNumPlaybackChannels);
         for (unsigned i = 0; i < mNumPlaybackChannels; ++i) {
             pointers[i] = mMasterBuffers[i].data();
         }
 
         masterBufferOffset = pScope->Process(
             RealtimeEffectManager::MasterGroup,
-            &pointers[0],
+            pointers.data(),
             mScratchPointers.data(),
             // The single dummy output buffer:
             mScratchPointers[mNumPlaybackChannels],
@@ -2689,19 +2817,27 @@ static void DoSoftwarePlaythrough(constSamplePtr inputBuffer,
                                   sampleFormat inputFormat,
                                   unsigned inputChannels,
                                   float* outputBuffer,
-                                  unsigned long len)
+                                  unsigned long len,
+                                  unsigned outputChannels)
 {
-    for (unsigned int i=0; i < inputChannels; i++) {
+    // Write input channels into the interleaved output buffer,
+    // using the actual output channel stride (not hardcoded to 2).
+    const auto channelsToWrite = std::min(inputChannels, outputChannels);
+    for (unsigned int i = 0; i < channelsToWrite; i++) {
         auto inputPtr = inputBuffer + (i * SAMPLE_SIZE(inputFormat));
 
         SamplesToFloats(inputPtr, inputFormat,
-                        outputBuffer + i, len, inputChannels, 2);
+                        outputBuffer + i, len,
+                        inputChannels, outputChannels);
     }
 
-    // One mono input channel goes to both output channels...
+    // One mono input channel goes to all output channels...
     if (inputChannels == 1) {
-        for (int i=0; i < len; i++) {
-            outputBuffer[2 * i + 1] = outputBuffer[2 * i];
+        for (unsigned n = 1; n < outputChannels; n++) {
+            for (unsigned long i = 0; i < len; i++) {
+                outputBuffer[outputChannels * i + n] =
+                    outputBuffer[outputChannels * i];
+            }
         }
     }
 }
@@ -2771,6 +2907,7 @@ bool AudioIoCallback::FillOutputBuffers(
 {
     const auto numPlaybackSequences = mPlaybackSequences.size();
     const auto numPlaybackChannels = mNumPlaybackChannels;
+    const auto deviceChannels = mDevicePlaybackChannels;
 
     mMaxFramesOutput = 0;
 
@@ -2819,13 +2956,10 @@ bool AudioIoCallback::FillOutputBuffers(
     // is very cheap to process.
 
     // ------ MEMORY ALLOCATION ----------------------
-    // These are small structures.
-    const auto tempBufs = stackAllocate(float*, numPlaybackChannels);
-
-    // And these are larger structures....
-    for (unsigned int c = 0; c < numPlaybackChannels; c++) {
-        tempBufs[c] = stackAllocate(float, framesPerBuffer);
-    }
+    // Use pre-allocated heap buffers instead of stackAllocate (alloca).
+    // At high channel counts, alloca would overflow the callback thread
+    // stack (~512KB on macOS, ~1MB on Windows).
+    const auto tempBufs = mCallbackTempPointers.data();
     // ------ End of MEMORY ALLOCATION ---------------
 
     auto playbackVolume = GetMixerOutputVol();
@@ -2880,9 +3014,12 @@ bool AudioIoCallback::FillOutputBuffers(
 
             // Output volume emulation: possibly copy meter samples, then
             // apply volume, then copy to the output buffer
+            // Use deviceChannels as stride for the interleaved output buffer
+            // (which may be wider than numPlaybackChannels to match the
+            // device's native channel count).
             if (outputMeterFloats != outputFloats) {
                 for ( unsigned i = 0; i < numberOfRetrievedFrames; ++i) {
-                    outputMeterFloats[mDevicePlaybackChannels * i + n]
+                    outputMeterFloats[deviceChannels * i + n]
                         +=playbackVolume * tempBufs[n][i];
                 }
             }
@@ -2899,7 +3036,7 @@ bool AudioIoCallback::FillOutputBuffers(
             // opaque ways
             const float deltaVolume = (playbackVolume - oldVolume) / numberOfRetrievedFrames;
             for (unsigned i = 0; i < numberOfRetrievedFrames; i++) {
-                outputFloats[mDevicePlaybackChannels * i + n]
+                outputFloats[deviceChannels * i + n]
                     +=(oldVolume + deltaVolume * i) * tempBufs[n][i];
             }
         }
@@ -2912,9 +3049,9 @@ bool AudioIoCallback::FillOutputBuffers(
 
     mLastPlaybackTimeMillis = ::wxGetUTCTimeMillis();
 
-    ClampBuffer(outputFloats, framesPerBuffer * mDevicePlaybackChannels);
+    ClampBuffer(outputFloats, framesPerBuffer * deviceChannels);
     if (outputMeterFloats != outputFloats) {
-        ClampBuffer(outputMeterFloats, framesPerBuffer * mDevicePlaybackChannels);
+        ClampBuffer(outputMeterFloats, framesPerBuffer * deviceChannels);
     }
 
     return false;
@@ -3104,6 +3241,7 @@ void AudioIoCallback::DoPlaythrough(
 {
     const auto numCaptureChannels = mNumCaptureChannels;
     const auto numPlaybackChannels = mNumPlaybackChannels;
+    const auto deviceChannels = mDevicePlaybackChannels;
 
     // Quick returns if next to nothing to do.
     if (!outputBuffer) {
@@ -3113,11 +3251,9 @@ void AudioIoCallback::DoPlaythrough(
         return;
     }
 
+    // Zero the FULL device-width buffer, not just the user's requested
+    // channels. This ensures unused device channels are silent.
     float* outputFloats = outputBuffer;
-    // Zero the full device-width buffer (may be wider than
-    // numPlaybackChannels if opened with native channel count).
-    const auto deviceChannels = mDevicePlaybackChannels
-        ? mDevicePlaybackChannels : numPlaybackChannels;
     for (unsigned i = 0; i < framesPerBuffer * deviceChannels; i++) {
         outputFloats[i] = 0.0;
     }
@@ -3125,7 +3261,8 @@ void AudioIoCallback::DoPlaythrough(
     if (inputBuffer && mSoftwarePlaythrough) {
         DoSoftwarePlaythrough(inputBuffer, mCaptureFormat,
                               numCaptureChannels,
-                              outputBuffer, framesPerBuffer);
+                              outputBuffer, framesPerBuffer,
+                              deviceChannels);
     }
 
     // Copy the results to outputMeterFloats if necessary
@@ -3237,7 +3374,13 @@ void AudioIoCallback::PushTrackMeterValues(const IMeterSenderPtr& sender, unsign
     auto stackBuffer = stackAllocate(float, frames);
 
     for (const Track& track: mPlaybackTracks) {
-        const auto nChannels = track.mSequence->NChannels();
+        // Clamp to the number of per-track ring buffers actually allocated
+        // (mBuffers is sized to mNumPlaybackChannels, which may be less than
+        // the sequence's channel count when playing multi-channel tracks
+        // through a device with fewer output channels).
+        const auto nChannels = std::min(
+            track.mSequence->NChannels(),
+            track.mBuffers.size());
         for (size_t nch = 0; nch < nChannels; ++nch) {
             const auto& buffer = track.mBuffers[nch];
             size_t len = buffer->Get(
@@ -3333,9 +3476,11 @@ int AudioIoCallback::AudioCallback(
     // tempFloats will be a reusable scratch pad for (possibly format converted)
     // audio data.  One temporary use is for the InputMeter data.
     const auto numPlaybackChannels = mNumPlaybackChannels;
+    const auto devicePlaybackChannels = mDevicePlaybackChannels;
     const auto numCaptureChannels = mNumCaptureChannels;
-    const auto tempFloats = stackAllocate(float,
-                                          framesPerBuffer * std::max(numCaptureChannels, numPlaybackChannels));
+    // Use pre-allocated heap buffers instead of stackAllocate (alloca).
+    // At high channel counts, alloca would overflow the callback thread stack.
+    const auto tempFloats = mCallbackScratchBuffer.data();
 
     bool bVolEmulationActive
         =(outputBuffer && GetMixerOutputVol() != 1.0);
@@ -3343,7 +3488,7 @@ int AudioIoCallback::AudioCallback(
     // we can often reuse the existing outputBuffer and save on allocating
     // something new.
     const auto outputMeterFloats = bVolEmulationActive
-                                   ? stackAllocate(float, framesPerBuffer * numPlaybackChannels)
+                                   ? mCallbackMeterBuffer.data()
                                    : outputBuffer;
     // ----- END of MEMORY ALLOCATIONS ------------------------------------------
 
