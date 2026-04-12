@@ -47,6 +47,12 @@ public:
     muse::async::Notification inputChannelsAvailableChanged() const override;
     muse::async::Notification inputChannelsChanged() const override;
 
+    int outputChannelsAvailable() const override;
+    int outputChannelsSelected() const override;
+    void setOutputChannels(const int count) override;
+    muse::async::Notification outputChannelsAvailableChanged() const override;
+    muse::async::Notification outputChannelsChanged() const override;
+
     double bufferLength() const override;
     void setBufferLength(double newBufferLength) override;
     muse::async::Notification bufferLengthChanged() const override;
@@ -74,6 +80,7 @@ public:
 private:
     void initHosts();
     void initInputChannels();
+    void initOutputChannels();
 
     void updateInputOutputDevices();
     void setupInputDevice(const std::string& newDevice);
@@ -85,12 +92,15 @@ private:
     std::vector<std::string> m_outputDevices;
     std::vector<std::string> m_inputDevices;
     int m_inputChannelsAvailable = 0;
+    int m_outputChannelsAvailable = 0;
 
     muse::async::Notification m_audioOutputDeviceChanged;
     muse::async::Notification m_audioInputDeviceChanged;
     muse::async::Notification m_audioApiChanged;
     muse::async::Notification m_inputChannelsChanged;
     muse::async::Notification m_inputChannelsListChanged;
+    muse::async::Notification m_outputChannelsChanged;
+    muse::async::Notification m_outputChannelsListChanged;
     muse::async::Notification m_bufferLengthChanged;
     muse::async::Notification m_automaticCompensationEnabledChanged;
     muse::async::Notification m_latencyCompensationChanged;

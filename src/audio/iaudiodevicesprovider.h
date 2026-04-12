@@ -36,6 +36,12 @@ public:
     virtual muse::async::Notification inputChannelsAvailableChanged() const = 0;
     virtual muse::async::Notification inputChannelsChanged() const = 0;
 
+    virtual int outputChannelsAvailable() const = 0;
+    virtual int outputChannelsSelected() const = 0;
+    virtual void setOutputChannels(const int count) = 0;
+    virtual muse::async::Notification outputChannelsAvailableChanged() const = 0;
+    virtual muse::async::Notification outputChannelsChanged() const = 0;
+
     virtual double bufferLength() const = 0;
     virtual void setBufferLength(double newBufferLength) = 0;
     virtual muse::async::Notification bufferLengthChanged() const = 0;

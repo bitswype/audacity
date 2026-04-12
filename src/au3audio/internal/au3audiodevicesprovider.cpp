@@ -26,6 +26,7 @@ static const muse::Settings::Key AUDIO_HOST("au3audio", "AudioIO/Host");
 static const muse::Settings::Key PLAYBACK_DEVICE("au3audio", "AudioIO/PlaybackDevice");
 static const muse::Settings::Key RECORDING_DEVICE("au3audio", "AudioIO/RecordingDevice");
 static const muse::Settings::Key INPUT_CHANNELS("au3audio", "AudioIO/RecordChannels");
+static const muse::Settings::Key OUTPUT_CHANNELS("au3audio", "AudioIO/PlaybackChannels");
 
 static const muse::Settings::Key AUTOMATIC_LATENCY_COMPENSATION("au3audio", "AudioIO/AutomaticLatencyCompensation");
 static const muse::Settings::Key LATENCY_DURATION("au3audio", "AudioIO/LatencyDuration");
@@ -80,6 +81,7 @@ void Au3AudioDevicesProvider::init()
     muse::settings()->setDefaultValue(RECORDING_DEVICE, muse::Val(MakeDeviceSourceString(inputDevice, inputMaps)));
 
     muse::settings()->setDefaultValue(INPUT_CHANNELS, muse::Val(1));
+    muse::settings()->setDefaultValue(OUTPUT_CHANNELS, muse::Val(2));
     muse::settings()->setDefaultValue(LATENCY_DURATION, muse::Val(100.0));
     muse::settings()->setDefaultValue(AUTOMATIC_LATENCY_COMPENSATION, muse::Val(false));
     muse::settings()->setDefaultValue(LATENCY_COMPENSATION, muse::Val(-130.0));
@@ -94,7 +96,10 @@ void Au3AudioDevicesProvider::init()
 
     muse::settings()->valueChanged(PLAYBACK_DEVICE).onReceive(nullptr, [this](const muse::Val& val) {
         Au3AudioDevicesProvider::handleDeviceChange();
+        initOutputChannels();
         m_audioOutputDeviceChanged.notify();
+        m_outputChannelsListChanged.notify();
+        m_outputChannelsChanged.notify();
     });
 
     muse::settings()->valueChanged(RECORDING_DEVICE).onReceive(nullptr, [this](const muse::Val& val) {
@@ -107,6 +112,10 @@ void Au3AudioDevicesProvider::init()
 
     muse::settings()->valueChanged(INPUT_CHANNELS).onReceive(nullptr, [this](const muse::Val& val) {
         m_inputChannelsChanged.notify();
+    });
+
+    muse::settings()->valueChanged(OUTPUT_CHANNELS).onReceive(nullptr, [this](const muse::Val& val) {
+        m_outputChannelsChanged.notify();
     });
 
     muse::settings()->valueChanged(AUTOMATIC_LATENCY_COMPENSATION).onReceive(nullptr, [this](const muse::Val& val) {
@@ -138,6 +147,7 @@ void Au3AudioDevicesProvider::init()
 
     updateInputOutputDevices();
     initInputChannels();
+    initOutputChannels();
 }
 
 std::vector<std::string> Au3AudioDevicesProvider::outputDevices() const
@@ -350,6 +360,31 @@ async::Notification Au3AudioDevicesProvider::inputChannelsChanged() const
     return m_inputChannelsChanged;
 }
 
+int Au3AudioDevicesProvider::outputChannelsSelected() const
+{
+    return muse::settings()->value(OUTPUT_CHANNELS).toInt();
+}
+
+int Au3AudioDevicesProvider::outputChannelsAvailable() const
+{
+    return m_outputChannelsAvailable;
+}
+
+void Au3AudioDevicesProvider::setOutputChannels(const int count)
+{
+    muse::settings()->setLocalValue(OUTPUT_CHANNELS, muse::Val(count));
+}
+
+async::Notification Au3AudioDevicesProvider::outputChannelsAvailableChanged() const
+{
+    return m_outputChannelsListChanged;
+}
+
+async::Notification Au3AudioDevicesProvider::outputChannelsChanged() const
+{
+    return m_outputChannelsChanged;
+}
+
 async::Notification Au3AudioDevicesProvider::apiChanged() const
 {
     return m_audioApiChanged;
@@ -390,6 +425,31 @@ void Au3AudioDevicesProvider::initInputChannels()
         const auto deviceName = MakeDeviceSourceString(&device, inMaps);
         if (deviceName == inputDevice) {
             m_inputChannelsAvailable = device.numChannels;
+            break;
+        }
+    }
+}
+
+void Au3AudioDevicesProvider::initOutputChannels()
+{
+    const std::vector<DeviceSourceMap>& outMaps = DeviceManager::Instance()->GetOutputDeviceMaps();
+    const std::string host = currentApi();
+    const std::string outputDevice = currentOutputDevice();
+
+    for (const auto& device : outMaps) {
+        if (device.hostString != host) {
+            continue;
+        }
+        const auto deviceName = MakeDeviceSourceString(&device, outMaps);
+        if (deviceName == outputDevice) {
+            m_outputChannelsAvailable = device.numChannels;
+            // Clamp stored selection to new device's capability
+            // (mirrors the input channel clamp in setupInputDevice)
+            int prevOutputChannels = muse::settings()->value(OUTPUT_CHANNELS).toInt();
+            if (prevOutputChannels > m_outputChannelsAvailable) {
+                muse::settings()->setLocalValue(OUTPUT_CHANNELS,
+                    muse::Val(std::min(prevOutputChannels, m_outputChannelsAvailable)));
+            }
             break;
         }
     }
@@ -469,10 +529,13 @@ void Au3AudioDevicesProvider::rescan()
     initHosts();
     updateInputOutputDevices();
     initInputChannels();
+    initOutputChannels();
 
     m_audioApiChanged.notify();
     m_audioOutputDeviceChanged.notify();
     m_audioInputDeviceChanged.notify();
     m_inputChannelsListChanged.notify();
     m_inputChannelsChanged.notify();
+    m_outputChannelsListChanged.notify();
+    m_outputChannelsChanged.notify();
 }

@@ -25,6 +25,7 @@ static const ActionQuery PLAYBACK_CHANGE_AUDIO_API_QUERY("action://playback/chan
 static const ActionQuery PLAYBACK_CHANGE_PLAYBACK_DEVICE_QUERY("action://playback/change-playback-device");
 static const ActionQuery PLAYBACK_CHANGE_RECORDING_DEVICE_QUERY("action://playback/change-recording-device");
 static const ActionQuery PLAYBACK_CHANGE_INPUT_CHANNELS_QUERY("action://playback/change-input-channels");
+static const ActionQuery PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY("action://playback/change-output-channels");
 
 static const ActionQuery PLAYBACK_LEVEL_QUERY("action://playback/level");
 
@@ -162,6 +163,13 @@ const UiActionList PlaybackUiActions::m_mainActions = {
              TranslatableString("action", "Change input channels"),
              Checkable::Yes
              ),
+    UiAction(PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY.toString(),
+             au::context::UiCtxProjectOpened,
+             au::context::CTX_PROJECT_FOCUSED,
+             TranslatableString("action", "Change output channels"),
+             TranslatableString("action", "Change output channels"),
+             Checkable::Yes
+             ),
     UiAction("toggle-loop-region",
              au::context::UiCtxAny,
              au::context::CTX_ANY,
@@ -269,6 +277,10 @@ void PlaybackUiActions::init()
 
     audioDevicesProvider()->inputChannelsChanged().onNotify(this, [this]() {
         actionCheckedChanged().send(ActionCodeList({ PLAYBACK_CHANGE_INPUT_CHANNELS_QUERY.toString() }));
+    });
+
+    audioDevicesProvider()->outputChannelsChanged().onNotify(this, [this]() {
+        actionCheckedChanged().send(ActionCodeList({ PLAYBACK_CHANGE_OUTPUT_CHANNELS_QUERY.toString() }));
     });
 }
 

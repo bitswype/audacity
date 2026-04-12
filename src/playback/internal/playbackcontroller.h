@@ -141,6 +141,7 @@ private:
     void setAudioOutputDevice(const muse::actions::ActionQuery& q);
     void setAudioInputDevice(const muse::actions::ActionQuery& q);
     void setInputChannels(const muse::actions::ActionQuery& q);
+    void setOutputChannels(const muse::actions::ActionQuery& q);
     void rescanAudioDevices();
 
     void notifyActionCheckedChanged(const muse::actions::ActionCode& actionCode);
