@@ -545,6 +545,7 @@ TrackItem* PanelTracksListModel::buildTrackItem(const Track& track)
     switch (track.type) {
     case trackedit::TrackType::Mono:
     case trackedit::TrackType::Stereo:
+    case trackedit::TrackType::MultiChannel:
         item = new WaveTrackItem(this);
         break;
     case trackedit::TrackType::Label:

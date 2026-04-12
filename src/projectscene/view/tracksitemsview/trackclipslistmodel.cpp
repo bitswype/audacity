@@ -383,10 +383,11 @@ bool TrackClipsListModel::moveSelectedClips(const ClipKey& key, bool completed)
     }
 
     bool clipsMovedToOtherTrack = false;
-    // Clips can only be moved to audio tracks (Mono and Stereo)
+    // Clips can only be moved to audio tracks
     TrackItemsListModel::MoveOffset moveOffset = calculateMoveOffset(item, key, {
         trackedit::TrackType::Mono,
-        trackedit::TrackType::Stereo
+        trackedit::TrackType::Stereo,
+        trackedit::TrackType::MultiChannel
     }, completed);
 
     if (vs->moveInitiated()) {

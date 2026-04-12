@@ -49,10 +49,19 @@ void MinMaxRMSPainter::paint(QPainter& painter, const trackedit::ClipKey& clipKe
     const float dbRange = std::abs(params.dbRange);
     const bool dB = !params.isLinear;
 
-    const std::vector<double> channelHeight {
-        params.geometry.height * params.channelHeightRatio,
-        params.geometry.height * (1 - params.channelHeightRatio),
-    };
+    // Compute per-channel heights. For stereo, use the asymmetric ratio.
+    // For N>2 channels, divide equally.
+    const auto nCh = waveClip->NChannels();
+    std::vector<double> channelHeight;
+    if (nCh == 2) {
+        channelHeight = {
+            params.geometry.height * params.channelHeightRatio,
+            params.geometry.height * (1 - params.channelHeightRatio),
+        };
+    } else {
+        const double perChannel = params.geometry.height / std::max(nCh, size_t(1));
+        channelHeight.assign(nCh, perChannel);
+    }
 
     const float zoomMin = dB ? getDBValue(params.displayBounds.first, dbRange) : params.displayBounds.first;
     const float zoomMax = dB ? getDBValue(params.displayBounds.second, dbRange) : params.displayBounds.second;

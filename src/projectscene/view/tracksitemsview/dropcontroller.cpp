@@ -4,7 +4,9 @@ using namespace au::projectscene;
 
 namespace {
 auto isAudioTrack = [](au::trackedit::TrackType type) {
-    return type == au::trackedit::TrackType::Mono || type == au::trackedit::TrackType::Stereo;
+    return type == au::trackedit::TrackType::Mono
+           || type == au::trackedit::TrackType::Stereo
+           || type == au::trackedit::TrackType::MultiChannel;
 };
 }
 

@@ -197,14 +197,7 @@ int Au3AudioInput::getFocusedTrackChannels() const
         return 0;
     }
 
-    int channels = 0;
-    if (track->type == au::trackedit::TrackType::Mono) {
-        channels = 1;
-    } else if (track->type == au::trackedit::TrackType::Stereo) {
-        channels = 2;
-    }
-
-    return channels;
+    return track->channelCount;
 }
 
 bool Au3AudioInput::isTrackMeterMonitoring() const
