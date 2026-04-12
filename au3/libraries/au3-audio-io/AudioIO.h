@@ -15,6 +15,7 @@
 
 #include "au3-audio-devices/AudioIOBase.h" // to inherit
 #include "au3-mixer/AudioIOSequences.h"
+#include "au3-mixer/ChannelRouting.h"
 #include "PlaybackSchedule.h" // member variable
 #include "RingBuffer.h"
 #include "au3-utility/LockFreeQueue.h"
@@ -159,10 +160,13 @@ public:
         };
     }
 
-    static constexpr size_t MaxPlaybackChannels = 2;
+    // Maximum output channels supported. Was hardcoded to 2 (stereo).
+    // Now supports multi-channel playback up to the device's capability.
+    // The per-track ring buffers are dynamically sized to mNumPlaybackChannels,
+    // which is set once in StartStream and is invariant during playback.
     struct Track {
         std::shared_ptr<const PlayableSequence> mSequence;
-        std::array<std::unique_ptr<RingBuffer>, MaxPlaybackChannels> mBuffers;
+        std::vector<std::unique_ptr<RingBuffer>> mBuffers;
 
         Track(std::shared_ptr<const PlayableSequence> sequence);
         ~Track();
@@ -260,6 +264,25 @@ public:
     std::vector<SampleBuffer> mScratchBuffers;
     std::vector<float*> mScratchPointers; //!< pointing into mScratchBuffers
 
+    // Pre-allocated buffers for the PortAudio callback thread.
+    // Replaces stackAllocate (alloca) which overflows at high channel counts.
+    // Sized to mNumPlaybackChannels * framesPerBuffer in AllocateBuffers.
+    std::vector<std::vector<float>> mCallbackTempBuffers;
+    std::vector<float*> mCallbackTempPointers;
+
+    // Pre-allocated zero buffer for identity routing silence fill.
+    // Avoids heap allocation on the audio feeder thread.
+    std::vector<float> mSilenceBuffer;
+
+    // Pre-allocated scratch buffers for AudioCallback.
+    // Replaces stackAllocate (alloca) which overflows at high channel counts.
+    std::vector<float> mCallbackScratchBuffer;     // tempFloats
+    std::vector<float> mCallbackMeterBuffer;       // outputMeterFloats
+
+    // Per-track output channel assignments, computed in AllocateBuffers.
+    // See ChannelRouting.h for the routing rules.
+    std::vector<TrackChannelAssignment> mTrackChannelAssignments;
+
     std::vector<std::unique_ptr<Mixer> > mPlaybackMixers;
 
     std::atomic<float> mMixerOutputVol{ 1.0 };
@@ -293,7 +316,6 @@ public:
     size_t mNumCaptureChannels;
     /*! Read by a worker thread but unchanging during playback */
     size_t mNumPlaybackChannels;
-    /*! Read by a worker thread but unchanging during playback */
     //! Actual channel count opened with PortAudio (may be larger than
     //! mNumPlaybackChannels to match the device's native channel count
     //! and bypass PortAudio's odd-channel duplication behavior).
