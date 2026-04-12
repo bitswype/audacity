@@ -1111,11 +1111,10 @@ bool WaveTrack::FixClipChannels(
     if (NChannels() == 1) {
         return MixDownToMono(progress, cancel);
     } else {
-        // Widen any mono clips to match the track's channel count.
-        // MakeStereo() no-arg currently only widens mono->stereo.
-        // TODO: for N>2 tracks, clips should be widened to N channels.
+        // Widen any clips to match the track's channel count.
+        const auto targetChannels = NChannels();
         for (const auto& clip : mClips) {
-            clip->MakeStereo();
+            clip->WidenToChannels(targetChannels);
         }
         return true;
     }

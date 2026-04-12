@@ -624,16 +624,20 @@ void WaveClip::MakeStereo(WaveClip&& other, bool mustAlign)
     }
 }
 
+void WaveClip::WidenToChannels(size_t nChannels)
+{
+    // Widen a clip to the given channel count by duplicating channel 0.
+    // Called by FixClipChannels to match clip width to the track's width.
+    while (NChannels() < nChannels) {
+        constexpr auto mustAlign = true; // Copies share the same data
+        MakeStereo(WaveClip(*this, GetFactory(), true, CreateToken {}), mustAlign);
+    }
+}
+
 void WaveClip::MakeStereo()
 {
-    // This no-arg variant is called by FixClipChannels to widen a clip
-    // to match the track's channel count. The name is legacy from stereo.
-    // For any clip with >= 2 channels, we consider it already wide enough.
-    if (NChannels() >= 2) {
-        return;
-    }
-    constexpr auto mustAlign = true; // Since they're the same ...
-    MakeStereo(WaveClip(*this, GetFactory(), true, CreateToken {}), mustAlign);
+    // Legacy convenience: widen mono to stereo.
+    WidenToChannels(2);
 }
 
 bool WaveClip::MakeMono(const std::function<void(double)>& progress, const std::function<bool()>& cancel)

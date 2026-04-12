@@ -916,6 +916,9 @@ public:
 
     void MakeStereo();
 
+    //! Widen clip to the given channel count by duplicating channel 0
+    void WidenToChannels(size_t nChannels);
+
     /*!
      * @brief Returns true if the clip is already mono or if it was successfully made mono.
      */
