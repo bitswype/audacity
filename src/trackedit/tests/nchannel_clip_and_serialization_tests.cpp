@@ -18,6 +18,9 @@
 #include "au3-math/SampleFormat.h"
 
 #include <set>
+#include <string>
+
+#include "au3-xml/XMLWriter.h"
 
 using namespace au;
 using namespace au::au3;
@@ -317,6 +320,87 @@ TEST_F(NChannelClipTest, StereoClip_SplitChannels_StillWorks)
    EXPECT_EQ(clip->NChannels(), 1u);
    ASSERT_NE(splitOff, nullptr);
    EXPECT_EQ(splitOff->NChannels(), 1u);
+}
+
+// ============================================================
+// WidenToChannels: mono clip widened to match N-channel track
+// ============================================================
+
+TEST_F(NChannelClipTest, WidenToChannels_MonoToSix)
+{
+   auto clip = makeMonoClip(64, 1.0f);
+   ASSERT_EQ(clip->NChannels(), 1u);
+
+   clip->WidenToChannels(6);
+
+   EXPECT_EQ(clip->NChannels(), 6u)
+      << "WidenToChannels(6) should produce a 6-channel clip";
+}
+
+TEST_F(NChannelClipTest, WidenToChannels_AlreadyWideEnough)
+{
+   auto clip = makeNChannelClip(4, 64);
+   ASSERT_EQ(clip->NChannels(), 4u);
+
+   clip->WidenToChannels(4);
+
+   EXPECT_EQ(clip->NChannels(), 4u)
+      << "WidenToChannels should be a no-op when clip already has enough channels";
+}
+
+TEST_F(NChannelClipTest, WidenToChannels_StereoToSix)
+{
+   auto clip = makeNChannelClip(2, 64);
+   ASSERT_EQ(clip->NChannels(), 2u);
+
+   clip->WidenToChannels(6);
+
+   EXPECT_EQ(clip->NChannels(), 6u)
+      << "WidenToChannels(6) should widen a stereo clip to 6 channels";
+}
+
+// ============================================================
+// Serialization: nchannels attribute
+// ============================================================
+
+TEST_F(NChannelClipTest, SixChannelTrack_WriteXML_ContainsNChannelsAttribute)
+{
+   auto track = makeNChannelTrack(6, 64);
+   ASSERT_EQ(track->NChannels(), 6u);
+
+   XMLStringWriter xml;
+   track->WriteXML(xml);
+   std::string output(xml.mb_str());
+
+   EXPECT_NE(output.find("nchannels=\"6\""), std::string::npos)
+      << "WriteXML should include nchannels attribute for 6-channel track.\n"
+      << "XML output: " << output.substr(0, 200);
+}
+
+TEST_F(NChannelClipTest, StereoTrack_WriteXML_NoNChannelsAttribute)
+{
+   auto track = makeNChannelTrack(2, 64);
+   ASSERT_EQ(track->NChannels(), 2u);
+
+   XMLStringWriter xml;
+   track->WriteXML(xml);
+   std::string output(xml.mb_str());
+
+   EXPECT_EQ(output.find("nchannels="), std::string::npos)
+      << "WriteXML should NOT include nchannels for stereo (<=2ch) tracks.\n"
+      << "XML output: " << output.substr(0, 200);
+}
+
+TEST_F(NChannelClipTest, MonoTrack_WriteXML_NoNChannelsAttribute)
+{
+   auto track = trackFactory().Create(1, floatSample, 44100.0);
+
+   XMLStringWriter xml;
+   track->WriteXML(xml);
+   std::string output(xml.mb_str());
+
+   EXPECT_EQ(output.find("nchannels="), std::string::npos)
+      << "WriteXML should NOT include nchannels for mono tracks.";
 }
 
 } // namespace au::trackedit

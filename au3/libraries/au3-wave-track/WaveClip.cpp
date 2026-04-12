@@ -629,8 +629,12 @@ void WaveClip::WidenToChannels(size_t nChannels)
     // Widen a clip to the given channel count by duplicating channel 0.
     // Called by FixClipChannels to match clip width to the track's width.
     while (NChannels() < nChannels) {
-        constexpr auto mustAlign = true; // Copies share the same data
-        MakeStereo(WaveClip(*this, GetFactory(), true, CreateToken {}), mustAlign);
+        // Create a full copy, then strip to mono (channel 0 only).
+        // This ensures attachments are consistent before MakeStereo.
+        auto mono = WaveClip(*this, GetFactory(), true, CreateToken {});
+        mono.DiscardRightChannel();
+        constexpr auto mustAlign = true;
+        MakeStereo(std::move(mono), mustAlign);
     }
 }
 
