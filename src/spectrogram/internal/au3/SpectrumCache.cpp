@@ -794,10 +794,11 @@ void WaveClipSpectrumCache::MakeStereo(WaveClipListener&& other, bool)
 
 void WaveClipSpectrumCache::SwapChannels()
 {
-    mSpecCaches.resize(2);
-    std::swap(mSpecCaches[0], mSpecCaches[1]);
-    mSpecPxCaches.resize(2);
-    std::swap(mSpecPxCaches[0], mSpecPxCaches[1]);
+    // Swap channels 0 and 1 without truncating caches for N>2 channel clips
+    if (mSpecCaches.size() >= 2)
+        std::swap(mSpecCaches[0], mSpecCaches[1]);
+    if (mSpecPxCaches.size() >= 2)
+        std::swap(mSpecPxCaches[0], mSpecPxCaches[1]);
 }
 
 void WaveClipSpectrumCache::Erase(size_t index)

@@ -22,6 +22,7 @@ public:
         UNDEFINED = 0,
         MONO,
         STEREO,
+        MULTICHANNEL,
         LABEL
     };
     Q_ENUM(Type)

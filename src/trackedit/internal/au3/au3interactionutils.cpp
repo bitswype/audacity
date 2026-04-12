@@ -115,8 +115,8 @@ au::au3::Au3WaveTrack* au::trackedit::utils::toggleStereo(au3::Au3TrackList& tra
     }
 
     const auto replacement = std::static_pointer_cast<au3::Au3WaveTrack>(track.Duplicate(au3::Au3Track::DuplicateOptions {}.Backup()));
-    const auto wasStereo = track.NChannels() == 2;
-    if (wasStereo) {
+    const auto wasMultiChannel = track.NChannels() > 1;
+    if (wasMultiChannel) {
         replacement->MakeMono();
     } else {
         replacement->MonoToStereo();
@@ -250,7 +250,7 @@ au::trackedit::TrackListInfo au::trackedit::utils::getTrackListInfo(const au3::A
     for (const au3::Au3Track* track : tracks) {
         const au3::Au3WaveTrack* waveTrack = dynamic_cast<const au3::Au3WaveTrack*>(track);
         if (waveTrack) {
-            if (waveTrack->NChannels() == 2) {
+            if (waveTrack->NChannels() > 1) {
                 stereoTrackIndices.push_back(i);
             }
             if (waveTrack->IsEmpty()) {

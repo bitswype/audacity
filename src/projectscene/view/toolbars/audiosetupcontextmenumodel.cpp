@@ -168,3 +168,4 @@ MenuItemList AudioSetupContextMenuModel::makeInputChannelsItems()
 
     return items;
 }
+

@@ -38,7 +38,8 @@ void TrackSpectrogramSettingsUpdater::forEachTrack(std::function<void(ITrackedit
         return;
     }
     for (const Track& track : trackeditProject->trackList()) {
-        if (track.type != TrackType::Mono && track.type != TrackType::Stereo) {
+        if (track.type != TrackType::Mono && track.type != TrackType::Stereo
+            && track.type != TrackType::MultiChannel) {
             continue;
         }
         const auto trackConfig = spectrogramService()->trackSpectrogramConfiguration(track.id);
