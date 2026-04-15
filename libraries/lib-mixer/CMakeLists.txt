@@ -22,6 +22,8 @@ class Curve should be extracted from it and lowered into lib-math.
 set( SOURCES
    AudioIOSequences.cpp
    AudioIOSequences.h
+   ChannelRouting.cpp
+   ChannelRouting.h
    DownmixSource.cpp
    DownmixSource.h
    DownmixStage.cpp
