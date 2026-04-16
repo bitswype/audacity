@@ -1040,21 +1040,34 @@ void ProjectFileManager::FixTracks(TrackList& tracks,
    // This is successively assigned the left member of each pair that
    // becomes unlinked
    Track::Holder unlinkedTrack;
-   // Beware iterator invalidation, because stereo channels get zipped,
-   // replacing WaveTracks
+   // Beware iterator invalidation, because channels get zipped,
+   // replacing WaveTracks.  For N>2 channel groups, ZipClips removes
+   // N-1 tracks, so we must re-find our position after each fix.
    for (auto iter = tracks.begin(); iter != tracks.end();) {
-      auto t = (*iter++)->SharedPointer();
+      auto t = (*iter)->SharedPointer();
       const auto linkType = t->GetLinkType();
+      // Advance past the leader and any partner tracks that will be consumed.
+      // For mono (linkType == None), advance 1. For linked, advance past
+      // the leader now; ZipClips will consume the partners.
+      ++iter;
       // Note, the next function may have an important upgrading side effect,
       // and return no error; or it may find a real error and repair it, but
       // that repaired track won't be used because opening will fail.
       if (!t->LinkConsistencyFix()) {
-         onError(XO("A channel of a stereo track was missing."));
+         onError(XO("A channel of a multi-channel track was missing."));
          unlinkedTrack = nullptr;
       }
+      // After LinkConsistencyFix, partner tracks may have been consumed
+      // by ZipClips (for stereo or N-channel groups). Re-find our position
+      // to avoid using an invalidated iterator.
+      if (linkType != ChannelGroup::LinkType::None && t->NChannels() > 1) {
+         // Successfully zipped - iterator may be stale, re-find
+         iter = tracks.Find(t.get());
+         ++iter;
+      }
       if (!unlinkedTrack) {
-         if (linkType != ChannelGroup::LinkType::None &&
-            t->NChannels() == 1) {
+         if (linkType != ChannelGroup::LinkType::None
+            && t->NChannels() == 1) {
             // The track became unlinked.
             // It should NOT have been replaced with a "zip"
             assert(t->GetOwner().get() == &tracks);
@@ -1065,30 +1078,6 @@ void ProjectFileManager::FixTracks(TrackList& tracks,
             iter = tracks.Find(t.get());
             ++iter;
          }
-      }
-      else {
-         //Not an elegant way to deal with stereo wave track linking
-         //compatibility between versions
-         if (const auto left = dynamic_cast<WaveTrack*>(unlinkedTrack.get())) {
-            if (const auto right = dynamic_cast<WaveTrack*>(t.get())) {
-               // As with the left, it should not have vanished from the list
-               assert(right->GetOwner().get() == &tracks);
-               left->SetPan(-1.0f);
-               right->SetPan(1.0f);
-               RealtimeEffectList::Get(*left).Clear();
-               RealtimeEffectList::Get(*right).Clear();
-
-               if(left->GetRate() != right->GetRate())
-                  //i18n-hint: explains why opened project was auto-modified
-                  onUnlink(XO("This project contained stereo tracks with different sample rates per channel."));
-               if(left->GetSampleFormat() != right->GetSampleFormat())
-                  //i18n-hint: explains why opened project was auto-modified
-                  onUnlink(XO("This project contained stereo tracks with different sample formats in channels."));
-               //i18n-hint: explains why opened project was auto-modified
-               onUnlink(XO("This project contained stereo tracks with non-aligned content."));
-            }
-         }
-         unlinkedTrack = nullptr;
       }
 
       if (const auto message = t->GetErrorOpening()) {

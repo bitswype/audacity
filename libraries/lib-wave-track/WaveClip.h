@@ -817,33 +817,44 @@ public:
     */
    void DiscardRightChannel();
 
-   //! @pre `NChannels() == 2`
+   //! @pre `NChannels() >= 2`
    void SwapChannels();
 
-   //! A stereo WaveClip becomes mono, keeping the left side and returning a
-   //! new clip with the right side samples
+   //! An N-channel WaveClip peels off its last channel, returning it as a
+   //! new mono clip
    /*!
-    @pre `NChannels() == 2`
-    @post `NChannels() == 1`
-    @post result: `result->NChannels() == 1`
+    @pre `NChannels() >= 2`
+    @post `result->NChannels() == 1`
     */
    std::shared_ptr<WaveClip> SplitChannels();
 
-   //! Steal the right side data from other
+   //! Steal channel data from other, appending all sequences
    //! All cutlines are lost in `this`!  Cutlines are not copied from other.
    /*!
-    Stating sufficient preconditions for the postondition.  Even stronger
+    Stating sufficient preconditions for the postcondition.  Even stronger
     preconditions on matching offset, trims, and rates could be stated.
 
-    @pre `NChannels() == 1`
-    @pre `other.NChannels() == 1`
+    @pre `other.NChannels() >= 1`
     @pre `GetSampleFormats() == other.GetSampleFormats()`
-    @pre `GetSampleBlockFactory() == other.GetSampleBlockFactory()`
+    @pre `GetFactory() == other.GetFactory()`
     @pre `!mustAlign || GetNumSamples() == other.GetNumSamples()`
 
     @post `!mustAlign || StrongInvariant()`
     */
    void MakeStereo(WaveClip &&other, bool mustAlign);
+
+   //! Legacy convenience: widen mono to stereo
+   void MakeStereo();
+
+   //! Widen clip to the given channel count by duplicating channel 0
+   void WidenToChannels(size_t nChannels);
+
+   /*!
+    * @brief Returns true if the clip is already mono or if it was
+    * successfully made mono.
+    */
+   bool MakeMono(const std::function<void(double)> &progress,
+      const std::function<bool()> &cancel);
 
    // These return a nonnegative number of samples meant to size a memory buffer
    size_t GetBestBlockSize(sampleCount t) const;

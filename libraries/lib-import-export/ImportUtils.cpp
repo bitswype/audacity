@@ -46,6 +46,15 @@ void ImportUtils::ShowMessageBox(const TranslatableString &message, const Transl
                            BasicUI::MessageBoxOptions().Caption(caption));
 }
 
+int ImportUtils::RequiredTrackCountFromChannels(int channels) noexcept
+{
+   if (channels <= 0) {
+      return 0;
+   }
+   // All channel counts produce a single N-channel track
+   return 1;
+}
+
 void ImportUtils::FinalizeImport(TrackHolders& outTracks, const std::vector<WaveTrack::Holder>& importedStreams)
 {
    for(auto& stream : importedStreams)

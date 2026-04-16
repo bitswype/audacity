@@ -20,6 +20,7 @@
 #include "WideSampleSequence.h"
 
 #include <functional>
+#include <memory>
 #include <optional>
 #include <vector>
 #include <wx/thread.h>
@@ -359,6 +360,23 @@ public:
 
    //! Simply discard any right channel
    void MakeMono();
+
+   /*!
+    * @brief Mixes down all channels of a track to mono.
+    * No care is taken to restore the initial state if conversion gets
+    * interrupted between clips, in which case `false` is returned and the
+    * track should be disposed of.
+    */
+   bool MixDownToMono(const std::function<void(double)>& progress,
+      const std::function<bool()>& cancel);
+
+   /*!
+    * @brief If stereo/mono, ensures all clips within it are stereo/mono,
+    * converting them if necessary.
+    */
+   bool FixClipChannels(
+      const std::function<void(double)>& progress,
+      const std::function<bool()>& cancel);
 
    /*!
     @pre `!GetOwner()`
@@ -769,10 +787,8 @@ private:
    // Protected variables
    //
 
-   //! @invariant non-null
-   WaveChannel mChannel;
-   //! may be null
-   std::optional<WaveChannel> mRightChannel;
+   //! @invariant size >= 1; all elements non-null
+   std::vector<std::unique_ptr<WaveChannel>> mChannels;
 
    /*!
     * Do not call `mClips.push_back` directly. Use `InsertClip` instead.
@@ -782,6 +798,7 @@ private:
 
    mutable int  mLegacyRate{ 0 }; //!< used only during deserialization
    sampleFormat mLegacyFormat{ undefinedSample }; //!< used only during deserialization
+   int mLegacyNChannels{ 0 }; //!< used only during deserialization; 0 = not specified
 
 private:
    //Updates rate parameter only in WaveTrackData
@@ -911,7 +928,6 @@ class WAVE_TRACK_API WaveTrackFactory final
     * \brief Creates a new track with project's default rate and format and the
     * given number of channels.
     * @pre `nChannels > 0`
-    * @pre `nChannels <= 2`
     */
    WaveTrack::Holder Create(size_t nChannels);
 
@@ -925,7 +941,6 @@ class WAVE_TRACK_API WaveTrackFactory final
     * \brief Creates a new \p track with specified \p format and
     * \p rate and number of channels
     * @pre `nChannels > 0`
-    * @pre `nChannels <= 2`
     */
    WaveTrack::Holder Create(size_t nChannels, sampleFormat format, double rate);
 

@@ -135,11 +135,10 @@ WaveTrack::IntervalHolder GetRenderedCopy(
       const auto numSamplesToGet =
          limitSampleBufferSize(blockSize, totalNumOutSamples - numOutSamples);
       stretcher.GetSamples(container.Get(), numSamplesToGet);
-      constSamplePtr data[2];
-      data[0] = reinterpret_cast<constSamplePtr>(container.Get()[0]);
-      if (interval.NChannels() == 2)
-         data[1] = reinterpret_cast<constSamplePtr>(container.Get()[1]);
-      dst->Append(data, floatSample, numSamplesToGet, 1, widestSampleFormat);
+      std::vector<constSamplePtr> data(numChannels);
+      for (size_t ch = 0; ch < numChannels; ++ch)
+         data[ch] = reinterpret_cast<constSamplePtr>(container.Get()[ch]);
+      dst->Append(data.data(), floatSample, numSamplesToGet, 1, widestSampleFormat);
       numOutSamples += numSamplesToGet;
       if (reportProgress)
          reportProgress(
@@ -398,9 +397,9 @@ std::shared_ptr<WaveTrack> WaveTrackFactory::DoCreate(size_t nChannels,
 {
    auto result = std::make_shared<WaveTrack>(
       WaveTrack::CreateToken{}, mpFactory, format, rate);
-   // Set the number of channels correctly before building all channel
-   // attachments
-   if (nChannels > 1)
+   // Constructor creates 1 channel. Add the rest before building
+   // channel attachments.
+   for (size_t i = 1; i < nChannels; ++i)
       result->CreateRight();
    // Only after make_shared returns, can weak_from_this be used, which
    // attached object factories may need
@@ -416,7 +415,6 @@ std::shared_ptr<WaveTrack> WaveTrackFactory::Create(sampleFormat format, double 
 WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels)
 {
    assert(nChannels > 0);
-   assert(nChannels <= 2);
    return Create(nChannels, QualitySettings::SampleFormatChoice(), mRate.GetRate());
 }
 
@@ -462,20 +460,13 @@ void WaveTrack::EraseChannelAttachments(size_t ii)
 WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels, sampleFormat format, double rate)
 {
    assert(nChannels > 0);
-   assert(nChannels <= 2);
    return CreateMany(nChannels, format, rate)->DetachFirst()
       ->SharedPointer<WaveTrack>();
 }
 
 TrackListHolder WaveTrackFactory::CreateMany(size_t nChannels, sampleFormat format, double rate)
 {
-   // There are some cases where more than two channels are requested
-   if (nChannels == 2)
-      return TrackList::Temporary(nullptr, DoCreate(nChannels, format, rate));
-   auto result = TrackList::Temporary(nullptr);
-   while (nChannels--)
-      result->Add(DoCreate(1, format, rate));
-   return result;
+   return TrackList::Temporary(nullptr, DoCreate(nChannels, format, rate));
 }
 
 WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels, const WaveTrack& proto)
@@ -494,8 +485,8 @@ WaveTrack *WaveTrack::New( AudacityProject &project )
 WaveTrack::WaveTrack(CreateToken&&, const SampleBlockFactoryPtr &pFactory,
    sampleFormat format, double rate )
    : mpFactory(pFactory)
-   , mChannel(*this)
 {
+   mChannels.push_back(std::make_unique<WaveChannel>(*this));
    WaveTrackData::Get(*this).SetSampleFormat(format);
    DoSetRate(static_cast<int>(rate));
 }
@@ -529,7 +520,7 @@ size_t WaveChannel::NChannels() const
 
 size_t WaveTrack::NChannels() const
 {
-   return mRightChannel.has_value() ? 2 : 1;
+   return mChannels.size();
 }
 
 AudioGraph::ChannelType WaveChannel::GetChannelType() const
@@ -666,9 +657,27 @@ bool WaveTrack::LinkConsistencyFix(const bool doFix)
       if (linkType == LinkType::None)
          // Did not visit the other call to removeZeroClips, do it now
          removeZeroClips(NarrowClips());
-      else
-         // Make a real wide wave track from two deserialized narrow tracks
-         ZipClips();
+      else {
+         // Make a real wide wave track from deserialized narrow tracks.
+         // For stereo (legacy or nchannels == 2), zip once.
+         // For N > 2 channels, zip N-1 times (once per additional channel).
+         const auto nZips = (mLegacyNChannels > 2)
+            ? (mLegacyNChannels - 1) : 1;
+         for (int i = 0; i < nZips; ++i) {
+            // Guard against corrupted files: if the next track in the
+            // list doesn't exist, stop zipping and report the error.
+            auto pOwner = GetOwner();
+            if (pOwner) {
+               auto iter = pOwner->Find(this);
+               if (++iter == pOwner->end()) {
+                  err = true;
+                  break;
+               }
+            }
+            ZipClips();
+         }
+         mLegacyNChannels = 0;
+      }
    }
    return !err;
 }
@@ -734,15 +743,10 @@ bool WaveTrack::HasClipNamed(const wxString& name) const
 
 std::shared_ptr<::Channel> WaveTrack::DoGetChannel(size_t iChannel)
 {
-   auto nChannels = NChannels();
-   if (iChannel >= nChannels)
+   if (iChannel >= mChannels.size())
       return {};
-   // TODO: more-than-two-channels
-   ::Channel &aliased = (iChannel == 0)
-      ? mChannel
-      : *mRightChannel;
    // Use aliasing constructor of std::shared_ptr
-   return { shared_from_this(), &aliased };
+   return { shared_from_this(), mChannels[iChannel].get() };
 }
 
 ChannelGroup &WaveChannel::DoGetChannelGroup() const
@@ -1015,7 +1019,7 @@ WaveTrack::Holder WaveTrack::EmptyCopy(size_t nChannels,
    const auto rate = GetRate();
    auto result = std::make_shared<WaveTrack>(CreateToken{},
       pFactory, GetSampleFormat(), rate);
-   if (nChannels > 1)
+   for (size_t i = 1; i < nChannels; ++i)
       result->CreateRight();
    result->Init(*this);
    // Copy state rather than BuildAll()
@@ -1038,10 +1042,55 @@ auto WaveTrack::EmptyCopy(
 
 void WaveTrack::MakeMono()
 {
-   mRightChannel.reset();
+   while (mChannels.size() > 1) {
+      EraseChannelAttachments(mChannels.size() - 1);
+      mChannels.pop_back();
+   }
    for (auto &pClip : mClips)
       pClip->DiscardRightChannel();
-   EraseChannelAttachments(1);
+}
+
+bool WaveTrack::MixDownToMono(
+   const std::function<void(double)>& progress,
+   const std::function<bool()>& cancel)
+{
+   WaveClipHolders multiChannelClips;
+   std::copy_if(mClips.begin(), mClips.end(),
+      std::back_inserter(multiChannelClips),
+      [](const auto& pClip){ return pClip->NChannels() > 1; });
+
+   if (multiChannelClips.empty())
+      return true;
+
+   auto i = 0u;
+   const auto clipProgress = [&](double p)
+      { progress((p + i) / multiChannelClips.size()); };
+   for (; i < multiChannelClips.size(); ++i) {
+      if (!multiChannelClips[i]->MakeMono(clipProgress, cancel))
+         return false;
+   }
+
+   while (mChannels.size() > 1) {
+      EraseChannelAttachments(mChannels.size() - 1);
+      mChannels.pop_back();
+   }
+
+   return true;
+}
+
+bool WaveTrack::FixClipChannels(
+   const std::function<void(double)>& progress,
+   const std::function<bool()>& cancel)
+{
+   if (NChannels() == 1)
+      return MixDownToMono(progress, cancel);
+   else {
+      // Widen any clips to match the track's channel count.
+      const auto targetChannels = NChannels();
+      for (const auto &clip : mClips)
+         clip->WidenToChannels(targetChannels);
+      return true;
+   }
 }
 
 auto WaveTrack::MonoToStereo() -> Holder
@@ -1064,26 +1113,41 @@ auto WaveTrack::MonoToStereo() -> Holder
 auto WaveTrack::SplitChannels() -> std::vector<Holder>
 {
    std::vector<Holder> result{ SharedPointer<WaveTrack>() };
-   if (NChannels() == 2) {
-      auto pOwner = GetOwner();
-      assert(pOwner); // pre
+   const auto n = NChannels();
+   if (n < 2)
+      return result;
+
+   auto pOwner = GetOwner();
+   assert(pOwner); // pre
+
+   // Split off channels N-1..1 into new mono tracks.
+   // SplitChannels() peels the last channel each time.
+   for (size_t ch = n - 1; ch >= 1; --ch) {
       auto pNewTrack = result.emplace_back(EmptyCopy(1));
       for (auto &pClip : mClips)
          pNewTrack->mClips.emplace_back(pClip->SplitChannels());
-      this->mRightChannel.reset();
       TrackList::AssignUniqueId(pNewTrack);
       auto iter = pOwner->Find(this);
       pOwner->Insert(*++iter, pNewTrack);
-      // Fix up the channel attachments to avoid waste of space
-      result[0]->EraseChannelAttachments(1);
-      result[1]->EraseChannelAttachments(0);
    }
+
+   // Now this track has only channel 0 remaining.
+   // Fix up channel attachments to avoid waste of space.
+   for (size_t i = n - 1; i >= 1; --i)
+      result[0]->EraseChannelAttachments(i);
+   for (size_t ch = 1; ch < n; ++ch) {
+      for (size_t i = n - 1; i > ch; --i)
+         result[ch]->EraseChannelAttachments(i);
+      for (size_t i = 0; i < ch; ++i)
+         result[ch]->EraseChannelAttachments(0);
+   }
+
    return result;
 }
 
 void WaveTrack::SwapChannels()
 {
-   assert(NChannels() == 2);
+   assert(NChannels() >= 2);
    for (const auto &pClip: mClips)
       pClip->SwapChannels();
    this->AttachedTrackObjects::ForEach([this](TrackAttachment &attachment){
@@ -2371,6 +2435,7 @@ static constexpr auto Volume_attr =
            // backward-compatibility with older projects.
 static constexpr auto Pan_attr = "pan";
 static constexpr auto Linked_attr = "linked";
+static constexpr auto NChannels_attr = "nchannels";
 static constexpr auto SampleFormat_attr = "sampleformat";
 static constexpr auto Channel_attr = "channel"; // write-only!
 
@@ -2413,6 +2478,9 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &
             DoSetPan(dblValue);
          else if (attr == Linked_attr && value.TryGet(nValue))
             SetLinkType(ToLinkType(nValue), false);
+         else if (attr == NChannels_attr && value.TryGet(nValue) &&
+                  nValue > 0)
+            mLegacyNChannels = static_cast<int>(nValue);
          else if (attr == SampleFormat_attr && value.TryGet(nValue) &&
                   Sequence::IsValidSampleFormat(nValue))
          {
@@ -2531,13 +2599,18 @@ void WaveTrack::WriteOneXML(const WaveChannel &channel, XMLWriter &xmlFile,
       xmlFile.WriteAttr(Channel_attr, channelType);
    }
 
-   // The "linked" flag is used to define the beginning of a channel group
-   // that isn't mono
+   // The "linked" flag marks the beginning of a channel group
    const auto linkType = static_cast<int>(
-      (iChannel == 0) && (nChannels == 2)
+      (iChannel == 0) && (nChannels >= 2)
          ? LinkType::Aligned
          : LinkType::None);
    xmlFile.WriteAttr(Linked_attr, linkType);
+
+   // For >2 channels, also write the channel count so the reader knows
+   // how many following tracks belong to this group. Old Audacity ignores
+   // unknown attributes, so this is backward-compatible.
+   if (iChannel == 0 && nChannels > 2)
+      xmlFile.WriteAttr(NChannels_attr, static_cast<long>(nChannels));
 
    // VS: trying to save tracks that didn't pass all necessary
    // initializations on project read from the disk.
@@ -3009,7 +3082,7 @@ auto WaveTrack::CopyClip(const Interval &toCopy, bool copyCutlines)
 
 void WaveTrack::CreateRight()
 {
-   mRightChannel.emplace(*this);
+   mChannels.push_back(std::make_unique<WaveChannel>(*this));
 }
 
 auto WaveTrack::DoCreateClip(double offset, const wxString& name) const
@@ -3346,7 +3419,7 @@ void WaveTrack::ZipClips(bool mustAlign)
 {
    const auto pOwner = GetOwner();
    assert(GetOwner()); // pre
-   assert(NChannels() == 1); // pre
+   // Removed NChannels() == 1 assertion: supports successive zips for N channels
 
    // If deserializing, first un-link the track, so iterator finds the partner.
    SetLinkType(LinkType::None);
