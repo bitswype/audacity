@@ -11,6 +11,8 @@
 *******************************************************************/
 #pragma once
 
+#include "MixerOptions.h" // for MIXER_API
+
 #include <cstddef>
 #include <vector>
 
@@ -38,6 +40,6 @@ struct TrackChannelAssignment
 //!   output channel: identity routing (track index -> output channel)
 //! - Multi-channel tracks (NChannels > 1): identity from their buffer offset
 //! - Tracks beyond the output channel count: legacy behavior (-1)
-std::vector<TrackChannelAssignment> ComputeChannelAssignments(
+MIXER_API std::vector<TrackChannelAssignment> ComputeChannelAssignments(
    const std::vector<size_t>& trackChannelCounts,
    size_t numOutputChannels);

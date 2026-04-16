@@ -15,6 +15,7 @@
 
 #include "AudioIOBase.h" // to inherit
 #include "AudioIOSequences.h"
+#include "ChannelRouting.h"
 #include "PlaybackSchedule.h" // member variable
 
 #include <functional>
@@ -166,6 +167,21 @@ public:
          AudioIOExtIterator{ *this, true }
       };
    }
+
+   // Maximum output channels supported. Was hardcoded to 2 (stereo).
+   // Now supports multi-channel playback up to the device's capability.
+   // The per-track ring buffers are dynamically sized to mNumPlaybackChannels,
+   // which is set once in StartStream and is invariant during playback.
+   struct Track {
+      std::shared_ptr<const PlayableSequence> mSequence;
+      std::vector<std::unique_ptr<RingBuffer>> mBuffers;
+
+      Track(std::shared_ptr<const PlayableSequence> sequence);
+      ~Track();
+
+      int64_t trackId() const;
+   };
+
    //! @}
 
    std::shared_ptr< AudioIOListener > GetListener() const
@@ -265,6 +281,7 @@ public:
    std::vector<std::vector<float>> mMasterBuffers;
    /*! Read by worker threads but unchanging during playback */
    RingBuffers mPlaybackBuffers;
+   std::vector<Track> mPlaybackTracks;
    ConstPlayableSequences      mPlaybackSequences;
    // Old volume is used in playback in linearly interpolating
    // the volume.
@@ -272,6 +289,25 @@ public:
    // Temporary buffers, each as large as the playback buffers
    std::vector<SampleBuffer> mScratchBuffers;
    std::vector<float *> mScratchPointers; //!< pointing into mScratchBuffers
+
+   // Pre-allocated buffers for the PortAudio callback thread.
+   // Replaces stackAllocate (alloca) which overflows at high channel counts.
+   // Sized to mNumPlaybackChannels * framesPerBuffer in AllocateBuffers.
+   std::vector<std::vector<float>> mCallbackTempBuffers;
+   std::vector<float *> mCallbackTempPointers;
+
+   // Pre-allocated zero buffer for identity routing silence fill.
+   // Avoids heap allocation on the audio feeder thread.
+   std::vector<float> mSilenceBuffer;
+
+   // Pre-allocated scratch buffers for AudioCallback.
+   // Replaces stackAllocate (alloca) which overflows at high channel counts.
+   std::vector<float> mCallbackScratchBuffer;     // tempFloats
+   std::vector<float> mCallbackMeterBuffer;       // outputMeterFloats
+
+   // Per-track output channel assignments, computed in AllocateBuffers.
+   // See ChannelRouting.h for the routing rules.
+   std::vector<TrackChannelAssignment> mChannelAssignments;
 
    std::vector<std::unique_ptr<Mixer>> mPlaybackMixers;
 
@@ -304,7 +340,6 @@ public:
    size_t              mNumCaptureChannels;
    /*! Read by a worker thread but unchanging during playback */
    size_t              mNumPlaybackChannels;
-   /*! Read by a worker thread but unchanging during playback */
    //! Actual channel count opened with PortAudio (may be larger than
    //! mNumPlaybackChannels to match the device's native channel count
    //! and bypass PortAudio's odd-channel duplication behavior).
@@ -327,8 +362,6 @@ public:
    void WaitForAudioThreadStopped();
 
    void ProcessOnceAndWait( std::chrono::milliseconds sleepTime = std::chrono::milliseconds(50) );
-
-
 
    std::atomic<bool>   mForceFadeOut{ false };
 
@@ -528,6 +561,7 @@ public:
 
    sampleFormat GetCaptureFormat() { return mCaptureFormat; }
    size_t GetNumPlaybackChannels() const { return mNumPlaybackChannels; }
+   size_t GetNumDevicePlaybackChannels() const { return mDevicePlaybackChannels; }
    size_t GetNumCaptureChannels() const { return mNumCaptureChannels; }
 
    // Meaning really capturing, not just pre-rolling
