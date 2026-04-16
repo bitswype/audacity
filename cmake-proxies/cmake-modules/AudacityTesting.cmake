@@ -122,6 +122,16 @@ if( ${_OPT}has_tests )
             PROPERTIES
                ENVIRONMENT "DYLD_FALLBACK_LIBRARY_PATH=$<SHELL_PATH:${CMAKE_BINARY_DIR}/$<CONFIG>/${_APPDIR}/Frameworks>"
          )
+      elseif( UNIX )
+         # PipeWire's ALSA plugin deadlocks during PortAudio device
+         # enumeration (Pa_Initialize).  Tests don't need real audio
+         # devices, so disconnect from PipeWire to avoid the hang.
+         # See: https://github.com/audacity/audacity/issues/6891
+         set_tests_properties(
+            ${ADD_UNIT_TEST_NAME}
+            PROPERTIES
+               ENVIRONMENT "PIPEWIRE_REMOTE=/dev/null"
+         )
       endif()
    endfunction()
 
