@@ -41,6 +41,7 @@ hold information about one contributor to Audacity.
 #include "ShuttleGui.h"
 #include "HelpSystem.h"
 #include "AccessibleLinksFormatter.h"
+#include "ModuleConstants.h"
 
 #include "AllThemeResources.h"
 #include "Theme.h"
@@ -72,9 +73,9 @@ hold information about one contributor to Audacity.
 #endif
 
 // To substitute into many other translatable strings
+// Reads AppName from ModuleConstants so forks only need to set it in one place.
 static const auto ProgramName =
-   //XO("Audacity");
-   Verbatim("Audacity");
+   Verbatim(wxString(AppName));
 
 void AboutDialog::CreateCreditsList()
 {

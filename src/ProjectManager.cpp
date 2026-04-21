@@ -15,6 +15,7 @@ Paul Licameli split from AudacityProject.cpp
 #include "Clipboard.h"
 #include "FileNames.h"
 #include "MenuCreator.h"
+#include "ModuleConstants.h"
 #include "ModuleManager.h"
 #include "Project.h"
 #include "ProjectAudioIO.h"
@@ -295,8 +296,8 @@ void InitProjectWindow( ProjectWindow &window )
 #endif
 
    window.UpdateStatusWidths();
-   auto msg = XO("Welcome to Audacity version %s")
-      .Format( AUDACITY_VERSION_STRING );
+   auto msg = XO("Welcome to %s version %s")
+      .Format( wxString(AppName), AUDACITY_VERSION_STRING );
    ProjectManager::Get( project ).SetStatusText( msg, MainStatusBarField() );
 }
 

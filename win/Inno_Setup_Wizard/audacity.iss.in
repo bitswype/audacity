@@ -23,7 +23,7 @@ Filename: "{app}\unins*.*";
 
 [Setup]
 ; compiler-related directives
-OutputBaseFilename=audacity-win-{#AppVersion}-@INSTALLER_SUFFIX@
+OutputBaseFilename=audacity-mc-win-{#AppVersion}-@INSTALLER_SUFFIX@
 
 WizardImageFile=".\audacity_InnoWizardImage.bmp"
 WizardSmallImageFile=".\audacity_InnoWizardSmallImage.bmp"
@@ -115,8 +115,8 @@ Source: "Package\plug-ins\*"; DestDir: "{app}\Plug-Ins\"; Flags: ignoreversion
 Source: "Package\modules\*"; DestDir: "{app}\modules\"; Flags: ignoreversion recursesubdirs
 
 [Icons]
-Name: "{commonprograms}\Audacity"; Filename: "{app}\audacity.exe"
-Name: "{commondesktop}\Audacity"; Filename: "{app}\audacity.exe"; Tasks: desktopicon
+Name: "{commonprograms}\Audacity-MC"; Filename: "{app}\audacity.exe"
+Name: "{commondesktop}\Audacity-MC"; Filename: "{app}\audacity.exe"; Tasks: desktopicon
 
 [InstallDelete]
 ; Get rid of Audacity 1.0.0 stuff that's no longer used.
@@ -175,23 +175,16 @@ Type: files; Name: "{app}\Plug-Ins\crossfadeout.ny"
 Type: files; Name: "{app}\Plug-Ins\clicktrack.ny"
 
 [Registry]
-; No longer allow user to choose whether to associate AUP file type with Audacity.
-; Leaving this one commented out example of the old way.
-; Root: HKCR; Subkey: ".AUP"; ValueType: string; ValueData: "Audacity.Project"; Flags: createvalueifdoesntexist uninsdeletekey; Tasks: associate_aup
-Root: HKCR; Subkey: ".AUP"; ValueType: string; ValueData: "Audacity.Project"; Flags: createvalueifdoesntexist uninsdeletekey;
-Root: HKCR; Subkey: ".AUP3"; ValueType: string; ValueData: "Audacity.Project"; Flags: createvalueifdoesntexist uninsdeletekey;
-Root: HKCR; Subkey: "Audacity.Project\OpenWithList\audacity.exe"; Flags: createvalueifdoesntexist uninsdeletekey;
-Root: HKCR; Subkey: "Audacity.Project"; ValueType: string; ValueData: "Audacity Project File"; Flags: createvalueifdoesntexist uninsdeletekey;
-Root: HKCR; Subkey: "Audacity.Project\shell"; ValueType: string; ValueData: ""; Flags: createvalueifdoesntexist uninsdeletekey;
-Root: HKCR; Subkey: "Audacity.Project\shell\open"; Flags: createvalueifdoesntexist uninsdeletekey;
-Root: HKCR; Subkey: "Audacity.Project\shell\open\command"; ValueType: string; ValueData: """{app}\audacity.exe"" ""%1"""; Flags: uninsdeletekey;
-Root: HKCU; Subkey: "Software\Classes\Audacity"; Flags: uninsdeletekey;
+; Audacity-MC does not hijack .AUP/.AUP3 file associations from upstream.
+; The fork exists alongside upstream Audacity; users open projects via File > Open.
+; If you want to associate project files with Audacity-MC instead of upstream,
+; do it manually via "Open With" from the file explorer.
 
 ;The following would allow a following 'help' installer to know where to put the 'help' files.
 ;Root: HKCR; Subkey: "Audacity.Project\Path";  ValueType: string; ValueData: {app}; Flags: createvalueifdoesntexist uninsdeletekey;
 
 [Run]
-Filename: "{app}\audacity.exe"; Description: "{cm:LaunchProgram,Audacity}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\audacity.exe"; Description: "{cm:LaunchProgram,Audacity-MC}"; Flags: nowait postinstall skipifsilent
 
 [Languages]
 ; NOTE: "0" in locale name will be translated to "@" when read by Audacity.

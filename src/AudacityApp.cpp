@@ -1325,7 +1325,7 @@ void AudacityApp::ShowSplashScreen() {
    mSplashScreen->SetPosition(wndRect.GetTopLeft());
    // Centered on whichever screen it is on.
    mSplashScreen->Center();
-   mSplashScreen->SetTitle(_("Audacity is starting up..."));
+   mSplashScreen->SetTitle(XO("%s is starting up...").Format(wxString(AppName)).Translation());
    SetTopWindow(mSplashScreen.get());
    mSplashScreen->Raise();
 }
