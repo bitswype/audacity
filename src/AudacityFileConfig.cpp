@@ -12,6 +12,7 @@ Paul Licameli split from Prefs.cpp
 #include "AudacityFileConfig.h"
 
 #include "HelpSystem.h"
+#include "ModuleConstants.h"
 #include "wxPanelWrapper.h"
 #include "ShuttleGui.h"
 #include "../images/Help.xpm"
@@ -148,7 +149,8 @@ bool AudacityFileConfig::Flush(bool bCurrentOnly)
 
 void AudacityFileConfig::Warn() const
 {
-   wxDialogWrapper dlg(nullptr, wxID_ANY, XO("Audacity Configuration Error"));
+   wxDialogWrapper dlg(nullptr, wxID_ANY,
+      XO("%s Configuration Error").Format(wxString(AppName)));
 
    ShuttleGui S(&dlg, eIsCreating);
 
@@ -168,9 +170,9 @@ void AudacityFileConfig::Warn() const
                "the disk is full or you do not have write permissions to the file. "
                "\n\n"
                "You can attempt to correct the issue and then click \"Retry\" to continue.\n\n"
-               "If you choose to \"Quit Audacity\", your project may be left in an unsaved "
+               "If you choose to \"Quit %s\", your project may be left in an unsaved "
                "state which will be recovered the next time you open it.")
-            .Format(mLocalFilename),
+            .Format(mLocalFilename, wxString(AppName)),
             false,
             500);
       }
@@ -185,7 +187,7 @@ void AudacityFileConfig::Warn() const
          b->SetToolTip( XO("Help").Translation() );
          b->SetLabel(XO("Help").Translation());       // for screen readers
 
-         b = S.Id(wxID_CANCEL).AddButton(XXO("&Quit Audacity"));
+         b = S.Id(wxID_CANCEL).AddButton(XXO("&Quit %s").Format(wxString(AppName)));
          b = S.Id(wxID_OK).AddButton(XXO("&Retry"));
          dlg.SetAffirmativeId(wxID_OK);
 

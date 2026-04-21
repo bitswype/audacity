@@ -1390,7 +1390,8 @@ void AudacityApp::OnInit0()
    if ( !ProjectFileIO::InitializeSQL() )
       this->CallAfter([]{
          ::AudacityMessageBox(
-            XO("SQLite library failed to initialize.  Audacity cannot continue.") );
+            XO("SQLite library failed to initialize.  %s cannot continue.")
+               .Format(wxString(AppName)) );
          QuitAudacity( true );
       });
 
@@ -1636,7 +1637,8 @@ bool AudacityApp::InitPart2()
       fileMenu->Append(wxID_NEW, wxString(_("&New")) + wxT("\tCtrl+N"));
       fileMenu->Append(wxID_OPEN, wxString(_("&Open...")) + wxT("\tCtrl+O"));
       fileMenu->AppendSubMenu(urecentMenu.release(), _("Open &Recent..."));
-      fileMenu->Append(wxID_ABOUT, _("&About Audacity..."));
+      fileMenu->Append(wxID_ABOUT,
+         XO("&About %s...").Format(wxString(AppName)).Translation());
       fileMenu->Append(wxID_PREFERENCES, wxString(_("&Preferences...")) + wxT("\tCtrl+,"));
 
       {
@@ -1996,7 +1998,8 @@ bool AudacityApp::CreateSingleInstanceChecker(const wxString &dir)
    mChecker.reset();
    auto checker = std::make_unique<wxSingleInstanceChecker>();
 
-   auto runningTwoCopiesStr = XO("Running two copies of Audacity simultaneously may cause\ndata loss or cause your system to crash.\n\n");
+   auto runningTwoCopiesStr = XO("Running two copies of %s simultaneously may cause\ndata loss or cause your system to crash.\n\n")
+      .Format(wxString(AppName));
 
    if (!checker->Create(name, dir))
    {

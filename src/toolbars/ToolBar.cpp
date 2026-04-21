@@ -27,6 +27,8 @@ in which buttons can be placed.
 
 #include "ToolBar.h"
 
+#include "ModuleConstants.h"
+
 // For compilers that support precompilation, includes "wx/wx.h".
 #include <wx/wxprec.h>
 
@@ -382,8 +384,8 @@ ToolBar::DockID ToolBar::DefaultDockID() const
 //
 TranslatableString ToolBar::GetTitle()
 {
-   /* i18n-hint: %s will be replaced by the name of the kind of toolbar.*/
-   return XO("Audacity %s Toolbar").Format( GetLabel() );
+   /* i18n-hint: first %s is the app name, second is the kind of toolbar.*/
+   return XO("%s %s Toolbar").Format( wxString(AppName), GetLabel() );
 }
 
 //

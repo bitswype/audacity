@@ -15,6 +15,7 @@ of languages for Audacity.
 *//*******************************************************************/
 #include "LangChoice.h"
 #include "IteratorX.h"
+#include "ModuleConstants.h"
 
 #include <wx/defs.h>
 #include <wx/choice.h>
@@ -52,7 +53,7 @@ wxString ChooseLanguage(wxWindow *parent)
 
    /* i18n-hint: Title on a dialog indicating that this is the first
     * time Audacity has been run. */
-   LangChoiceDialog dlog(parent, -1, XO("Audacity First Run"));
+   LangChoiceDialog dlog(parent, -1, XO("%s First Run").Format(wxString(AppName)));
    dlog.CentreOnParent();
    dlog.ShowModal();
    returnVal = dlog.GetLang();
@@ -82,7 +83,7 @@ LangChoiceDialog::LangChoiceDialog(wxWindow * parent,
       S.StartHorizontalLay();
       {
          S.SetBorder(15);
-         mChoice = S.AddChoice(XXO("Choose Language for Audacity to use:"),
+         mChoice = S.AddChoice(XXO("Choose Language for %s to use:").Format(wxString(AppName)),
             mLangNames,
             lang);
       }

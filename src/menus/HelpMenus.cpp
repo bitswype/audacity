@@ -427,7 +427,7 @@ auto HelpMenu()
             AlwaysEnabledFlag ),
          Command( wxT("Manual"), XXO("&Manual"), OnManual,
             AlwaysEnabledFlag ),
-         Command( wxT("AudacitySupport"), XXO("Audacity &Support"), OnAudacitySupport,
+         Command( wxT("AudacitySupport"), XXO("%s &Support").Format(wxString(AppName)), OnAudacitySupport,
             AlwaysEnabledFlag )
       ),
 
