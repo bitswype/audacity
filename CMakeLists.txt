@@ -36,12 +36,16 @@ set( AUDACITY_REVISION 7 )
 set( AUDACITY_MODLEVEL 0 )
 
 string( TIMESTAMP __TDATE__ "%Y%m%d" )
+# Fork suffix identifies this build as the bitswype multi-channel fork.
+# Keeps upstream naming for familiarity, but the suffix makes it clear it's
+# a fork in logs, About dialogs, and package filenames.
+set( AUDACITY_FORK_SUFFIX "-bitswype" )
 if( AUDACITY_BUILD_LEVEL EQUAL 0 )
-   set( AUDACITY_SUFFIX "-alpha-${__TDATE__}" )
+   set( AUDACITY_SUFFIX "${AUDACITY_FORK_SUFFIX}-alpha-${__TDATE__}" )
 elseif(  AUDACITY_BUILD_LEVEL EQUAL 1 )
-   set( AUDACITY_SUFFIX "-beta-${__TDATE__}" )
+   set( AUDACITY_SUFFIX "${AUDACITY_FORK_SUFFIX}-beta-${__TDATE__}" )
 else()
-   set( AUDACITY_SUFFIX "" )
+   set( AUDACITY_SUFFIX "${AUDACITY_FORK_SUFFIX}" )
 endif()
 
 # Don't allow in-source builds...no real reason, just

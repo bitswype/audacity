@@ -35,18 +35,22 @@ SolidCompression=yes
 ; by Microsoft's desktop applications guideline, but we don't want to do that.
 DisableWelcomePage=no
 
+; Unique AppId so this fork installs alongside upstream Audacity without
+; overwriting it or clashing in Add/Remove Programs.
+AppId={{60b2e159-4c05-41d1-afb3-dfe7c9649ad0}
 AppName={#AppName}
-AppVerName=Audacity {#AppVersion}
+AppVerName=Audacity {#AppVersion} (bitswype fork)
 ; Specify AppVersion as well, so it appears in the Add/Remove Programs entry.
 AppVersion={#AppVersion}
-AppPublisher="Audacity Team"
-AppPublisherURL=http://audacityteam.org
-AppSupportURL=http://audacityteam.org
-AppUpdatesURL=http://audacityteam.org
+AppPublisher="bitswype"
+AppPublisherURL=https://github.com/bitswype/audacity
+AppSupportURL=https://github.com/bitswype/audacity/issues
+AppUpdatesURL=https://github.com/bitswype/audacity/releases
 ChangesAssociations=yes
 @INSTALLER_X64_MODE@
 
-DefaultDirName={commonpf}\Audacity
+; Install to a dedicated folder so it doesn't overwrite upstream Audacity.
+DefaultDirName={commonpf}\Audacity-bitswype
 
 VersionInfoProductName={#AppName}
 VersionInfoProductTextVersion={#GetFileProductVersion(AppExe)}
