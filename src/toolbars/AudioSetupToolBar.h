@@ -54,6 +54,7 @@ class AudioSetupToolBar final : public ToolBar {
    void OnHost(int id);
    void OnInput(int id);
    void OnChannels(int id);
+   void OnOutputChannels(int id);
    void OnOutput(int id);
    void OnAudioDeviceRescan(wxCommandEvent&);
    void OnSettings(wxCommandEvent& event);
@@ -66,6 +67,7 @@ class AudioSetupToolBar final : public ToolBar {
    void FillHosts();
    void FillHostDevices();
    void FillInputChannels();
+   void FillOutputChannels();
    void SetDevices(const DeviceSourceMap *in, const DeviceSourceMap *out);
    void RegenerateTooltips() override;
 
@@ -139,6 +141,7 @@ class AudioSetupToolBar final : public ToolBar {
    Choices mInput;
    Choices mOutput;
    Choices mInputChannels;
+   Choices mOutputChannels;
    Choices mHost;
 
    Observer::Subscription mSubscription;

@@ -207,6 +207,11 @@ void AudioSetupToolBar::OnAudioSetup(wxCommandEvent& WXUNUSED(evt))
    menu.AppendSeparator();
 
    //i18n-hint: Audio setup menu
+   mOutputChannels.AppendSubMenu(*this,
+      menu, &AudioSetupToolBar::OnOutputChannels, _("Playback Cha&nnels"));
+   menu.AppendSeparator();
+
+   //i18n-hint: Audio setup menu
    mInput.AppendSubMenu(*this, menu,
       &AudioSetupToolBar::OnInput, _("&Recording Device"));
    menu.AppendSeparator();
@@ -287,7 +292,10 @@ void AudioSetupToolBar::UpdatePrefs()
       desc = devName + wxT(": ") + sourceName;
 
    if (mOutput.Get() && *mOutput.Get() != desc) {
-      if (!mOutput.Set(desc) && !mOutput.Empty()) {
+      if (mOutput.Set(desc))
+         // updates mOutputChannels
+         FillOutputChannels();
+      else if (!mOutput.Empty()) {
          for (size_t i = 0; i < outMaps.size(); i++) {
             if (outMaps[i].hostString == hostName &&
                MakeDeviceSourceString(&outMaps[i]) == mOutput.GetFirst()) {
@@ -315,6 +323,12 @@ void AudioSetupToolBar::UpdatePrefs()
    auto newChannels = AudioIORecordChannels.ReadWithDefault(0);
    if (newChannels > 0 && oldChannels != newChannels)
       mInputChannels.Set(newChannels - 1);
+
+   // Same for output channels
+   long oldOutChannels = 1 + mOutputChannels.GetSmallIntegerId();
+   auto newOutChannels = AudioIOPlaybackChannels.ReadWithDefault(0);
+   if (newOutChannels > 0 && oldOutChannels != newOutChannels)
+      mOutputChannels.Set(newOutChannels - 1);
 
    selectedHost = mHost.Get();
    if (!hostName.empty() && selectedHost && *selectedHost != hostName)
@@ -389,6 +403,7 @@ void AudioSetupToolBar::RepopulateMenus()
    FillHosts();
    FillHostDevices();
    FillInputChannels();
+   FillOutputChannels();
    // make the device display selection reflect the prefs if they exist
    UpdatePrefs();
 }
@@ -548,6 +563,52 @@ void AudioSetupToolBar::FillInputChannels()
       mInputChannels.Set(newChannels - 1);
 }
 
+void AudioSetupToolBar::FillOutputChannels()
+{
+   const std::vector<DeviceSourceMap> &outMaps = DeviceManager::Instance()->GetOutputDeviceMaps();
+   auto host = AudioIOHost.Read();
+   auto device = AudioIOPlaybackDevice.Read();
+   auto source = AudioIOPlaybackSource.Read();
+   long newChannels = 0;
+
+   auto oldChannels = AudioIOPlaybackChannels.Read();
+   mOutputChannels.Clear();
+
+   wxArrayStringEx names;
+   for (auto & dev: outMaps) {
+      if (source == dev.sourceString &&
+          device == dev.deviceString &&
+          host   == dev.hostString) {
+
+         // add one selection for each channel of this source
+         for (size_t j = 0; j < (unsigned int)dev.numChannels; j++) {
+            wxString name;
+
+            if (j == 0) {
+               name = _("1 (Mono) Playback Channel");
+            }
+            else if (j == 1) {
+               name = _("2 (Stereo) Playback Channels");
+            }
+            else {
+               name = wxString::Format(wxT("%d"), (int)j + 1);
+            }
+            names.push_back(name);
+         }
+         newChannels = dev.numChannels;
+         if (oldChannels <= newChannels && oldChannels >= 1) {
+            newChannels = oldChannels;
+         }
+         AudioIOPlaybackChannels.Write(newChannels);
+         break;
+      }
+   }
+   mOutputChannels.Set(std::move(names));
+   if (newChannels >= 1)
+      // Correct to 0-based index in choice
+      mOutputChannels.Set(newChannels - 1);
+}
+
 void AudioSetupToolBar::AppendSubMenu(AudioSetupToolBar &toolbar,
    wxMenu& menu, const wxArrayString &labels, int checkedItem,
    Callback callback, const wxString& title)
@@ -631,6 +692,9 @@ void AudioSetupToolBar::SetDevices(const DeviceSourceMap *in, const DeviceSource
          AudioIOPlaybackSource.Reset();
       }
       gPrefs->Flush();
+
+      // updates mOutputChannels
+      FillOutputChannels();
    }
 }
 
@@ -673,6 +737,14 @@ void AudioSetupToolBar::OnChannels(int id)
    mInputChannels.Set(id);
    // Remember 1-based value in preferences
    AudioIORecordChannels.Write(id + 1);
+   CommonMenuItemSteps(false);
+}
+
+void AudioSetupToolBar::OnOutputChannels(int id)
+{
+   mOutputChannels.Set(id);
+   // Remember 1-based value in preferences
+   AudioIOPlaybackChannels.Write(id + 1);
    CommonMenuItemSteps(false);
 }
 
