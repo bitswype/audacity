@@ -10,5 +10,7 @@
 
 #include "ModuleConstants.h"
 
-// We want Audacity with a capital 'A'
-const std::wstring AppName = L"Audacity";
+// We want Audacity with a capital 'A'.
+// bitswype fork: renamed to Audacity-MC so settings, config directories,
+// and desktop/start-menu entries don't collide with upstream Audacity.
+const std::wstring AppName = L"Audacity-MC";

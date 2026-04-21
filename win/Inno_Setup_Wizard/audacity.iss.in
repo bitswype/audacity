@@ -39,18 +39,18 @@ DisableWelcomePage=no
 ; overwriting it or clashing in Add/Remove Programs.
 AppId={{60b2e159-4c05-41d1-afb3-dfe7c9649ad0}
 AppName={#AppName}
-AppVerName=Audacity {#AppVersion} (bitswype fork)
+AppVerName=Audacity-MC {#AppVersion}
 ; Specify AppVersion as well, so it appears in the Add/Remove Programs entry.
 AppVersion={#AppVersion}
 AppPublisher="bitswype"
 AppPublisherURL=https://github.com/bitswype/audacity
 AppSupportURL=https://github.com/bitswype/audacity/issues
 AppUpdatesURL=https://github.com/bitswype/audacity/releases
-ChangesAssociations=yes
+ChangesAssociations=no
 @INSTALLER_X64_MODE@
 
 ; Install to a dedicated folder so it doesn't overwrite upstream Audacity.
-DefaultDirName={commonpf}\Audacity-bitswype
+DefaultDirName={commonpf}\Audacity-MC
 
 VersionInfoProductName={#AppName}
 VersionInfoProductTextVersion={#GetFileProductVersion(AppExe)}
