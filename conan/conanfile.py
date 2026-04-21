@@ -38,7 +38,7 @@ def global_copy_files(conanfile, dependency_info):
         if len(dependency_info.cpp_info.libdirs) == 0:
             return
 
-        copied_files = copy(conanfile, "*.dylib*", dependency_info.cpp_info.libdirs[0], f"{conanfile.build_folder}/Audacity.app/Contents/Frameworks")
+        copied_files = copy(conanfile, "*.dylib*", dependency_info.cpp_info.libdirs[0], f"{conanfile.build_folder}/Audacity-MC.app/Contents/Frameworks")
 
         for file in copied_files:
             if not os.path.islink(file):
@@ -130,7 +130,7 @@ class CrashpadDependency(AudacityDependency):
         if conanfile.settings.os == "Windows":
             dst_path += f"/{conanfile.settings.build_type}"
         elif conanfile.settings.os == "Macos":
-            dst_path += "/Audacity.app/Contents/MacOS"
+            dst_path += "/Audacity-MC.app/Contents/MacOS"
         else:
             dst_path += "/bin"
 
