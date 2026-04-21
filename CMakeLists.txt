@@ -455,7 +455,9 @@ set( CMAKE_INSTALL_RPATH_USE_LINK_PATH FALSE )
 
 # Adjust them for the Mac
 if( CMAKE_SYSTEM_NAME MATCHES "Darwin" )
-   set( _APPDIR "${AUDACITY_NAME}.app/Contents" )
+   # NOTE: keep this in sync with the AUDACITY_NAME logic later in this file
+   # (we can't use AUDACITY_NAME here because it's defined later).
+   set( _APPDIR "Audacity-MC.app/Contents" )
    set( _DEST "${_DESTDIR}/${_APPDIR}" )
    set( _EXEDIR "${_APPDIR}/MacOS" )
    set( _MODDIR "${_APPDIR}/modules" )
