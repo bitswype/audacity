@@ -22,6 +22,7 @@ Paul Licameli split from AudacityProject.cpp
 
 #include "ActiveProjects.h"
 #include "CodeConversions.h"
+#include "ModuleConstants.h"
 #include "DBConnection.h"
 #include "FileNames.h"
 #include "PendingTracks.h"
@@ -1574,15 +1575,16 @@ void ProjectFileIO::SetProjectTitle(int number)
    {
       name =
       /* i18n-hint: The %02i is the project number, the %s is the project name.*/
-      XO("[Project %02i] Audacity \"%s\"")
+      XO("[Project %02i] %s \"%s\"")
          .Format( number + 1,
+                 wxString(AppName),
                  name.empty() ? XO("<untitled>") : Verbatim((const char *)name))
          .Translation();
    }
-   // If we are not showing numbers, then <untitled> shows as 'Audacity'.
+   // If we are not showing numbers, then <untitled> shows as the app name.
    else if (name.empty())
    {
-      name = _TS("Audacity");
+      name = wxString(AppName);
    }
 
    if (mRecovered)

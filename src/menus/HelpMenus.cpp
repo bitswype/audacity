@@ -12,6 +12,7 @@
 #include "FileNames.h"
 #include "HelpText.h"
 #include "../HelpUtilities.h"
+#include "ModuleConstants.h"
 #include "LogWindow.h"
 #include "Prefs.h"
 #include "Project.h"
@@ -480,7 +481,7 @@ auto HelpMenu()
             OnCheckForUpdates,
             AlwaysEnabledFlag ),
    #endif
-         Command( wxT("About"), XXO("&About Audacity"), OnAbout,
+         Command( wxT("About"), XXO("&About %s").Format(wxString(AppName)), OnAbout,
             AlwaysEnabledFlag )
       )
    ) };
