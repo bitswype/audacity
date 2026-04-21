@@ -71,6 +71,7 @@ class DeviceToolBar final : public ToolBar {
    void FillHosts();
    void FillHostDevices();
    void FillInputChannels();
+   void FillOutputChannels();
    void SetDevices(const DeviceSourceMap *in, const DeviceSourceMap *out);
    void SetNames();
    void RegenerateTooltips() override;
@@ -79,6 +80,7 @@ class DeviceToolBar final : public ToolBar {
    wxChoice *mInput;
    wxChoice *mOutput;
    wxChoice *mInputChannels;
+   wxChoice *mOutputChannels;
    wxChoice *mHost;
 
    Observer::Subscription mSubscription;

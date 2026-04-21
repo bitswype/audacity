@@ -115,10 +115,11 @@ void DeviceToolBar::Create(wxWindow *parent)
 
 void DeviceToolBar::DeinitChildren()
 {
-   mInput         = NULL;
-   mOutput        = NULL;
-   mInputChannels = NULL;
-   mHost          = NULL;
+   mInput          = NULL;
+   mOutput         = NULL;
+   mInputChannels  = NULL;
+   mOutputChannels = NULL;
+   mHost           = NULL;
 }
 
 void DeviceToolBar::Populate()
@@ -176,6 +177,16 @@ void DeviceToolBar::Populate()
 #endif
    Add(mOutput, 30, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 1);
 
+   // Output channels
+   mOutputChannels = safenew wxChoice(this,
+                                      wxID_ANY,
+                                      wxDefaultPosition,
+                                      wxDefaultSize);
+#if wxUSE_ACCESSIBILITY
+   mOutputChannels->SetAccessible(safenew WindowAccessible(mOutputChannels));
+#endif
+   Add(mOutputChannels, 20, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 1);
+
 #if defined(__WXGTK3__)
    // Nothing special
 #elif defined(__WXGTK__)
@@ -188,6 +199,7 @@ void DeviceToolBar::Populate()
    mInput->SetFont(font);
    mInputChannels->SetFont(font);
    mOutput->SetFont(font);
+   mOutputChannels->SetFont(font);
 #endif
 
    mHost->Bind(wxEVT_SET_FOCUS,
@@ -212,6 +224,12 @@ void DeviceToolBar::Populate()
                  &DeviceToolBar::OnFocus,
                  this);
    mInputChannels->Bind(wxEVT_KILL_FOCUS,
+                 &DeviceToolBar::OnFocus,
+                 this);
+   mOutputChannels->Bind(wxEVT_SET_FOCUS,
+                 &DeviceToolBar::OnFocus,
+                 this);
+   mOutputChannels->Bind(wxEVT_KILL_FOCUS,
                  &DeviceToolBar::OnFocus,
                  this);
 
@@ -328,6 +346,11 @@ void DeviceToolBar::UpdatePrefs()
    if (newChannels > 0 && oldChannels != newChannels)
       mInputChannels->SetSelection(newChannels - 1);
 
+   long oldOutChannels = mOutputChannels->GetSelection() + 1;
+   auto newOutChannels = AudioIOPlaybackChannels.ReadWithDefault(0);
+   if (newOutChannels > 0 && oldOutChannels != newOutChannels)
+      mOutputChannels->SetSelection(newOutChannels - 1);
+
    if (!hostName.empty() && mHost->GetStringSelection() != hostName)
       mHost->SetStringSelection(hostName);
 
@@ -361,7 +384,8 @@ void DeviceToolBar::EnableDisableButtons()
       // Here we should relinquish focus
       if (audioStreamActive) {
          wxWindow *focus = wxWindow::FindFocus();
-         if (focus == mHost || focus == mInput || focus == mOutput || focus == mInputChannels)
+         if (focus == mHost || focus == mInput || focus == mOutput
+            || focus == mInputChannels || focus == mOutputChannels)
             TrackPanel::Get( mProject ).SetFocus();
       }
 
@@ -369,6 +393,7 @@ void DeviceToolBar::EnableDisableButtons()
       mInput->Enable(!audioStreamActive);
       mOutput->Enable(!audioStreamActive);
       mInputChannels->Enable(!audioStreamActive);
+      mOutputChannels->Enable(!audioStreamActive);
    }
 }
 
@@ -380,6 +405,7 @@ void DeviceToolBar::SetNames()
    mInput->SetName(_("Recording Device"));
    mHost->SetName(_("Audio Host"));
    mInputChannels->SetName(_("Recording Channels"));
+   mOutputChannels->SetName(_("Playback Channels"));
 }
 
 void DeviceToolBar::RegenerateTooltips()
@@ -390,6 +416,7 @@ void DeviceToolBar::RegenerateTooltips()
    mInput->SetToolTip(mInput->GetName() + wxT(" - ") + mInput->GetStringSelection());
    mHost->SetToolTip(mHost->GetName() + wxT(" - ") + mHost->GetStringSelection());
    mInputChannels->SetToolTip(mInputChannels->GetName() + wxT(" - ") + mInputChannels->GetStringSelection());
+   mOutputChannels->SetToolTip(mOutputChannels->GetName() + wxT(" - ") + mOutputChannels->GetStringSelection());
 #endif
 }
 
@@ -398,6 +425,7 @@ void DeviceToolBar::RefillCombos()
    FillHosts();
    FillHostDevices();
    FillInputChannels();
+   FillOutputChannels();
    // make the device display selection reflect the prefs if they exist
    UpdatePrefs();
 }
@@ -562,6 +590,52 @@ void DeviceToolBar::FillInputChannels()
    mInputChannels->SetMinSize(wxSize(50, wxDefaultCoord));
 }
 
+void DeviceToolBar::FillOutputChannels()
+{
+   const std::vector<DeviceSourceMap> &outMaps = DeviceManager::Instance()->GetOutputDeviceMaps();
+   auto host = AudioIOHost.Read();
+   auto device = AudioIOPlaybackDevice.Read();
+   auto source = AudioIOPlaybackSource.Read();
+   long newChannels;
+
+   auto oldChannels = AudioIOPlaybackChannels.Read();
+   mOutputChannels->Clear();
+   for (auto & dev: outMaps) {
+      if (source == dev.sourceString &&
+          device == dev.deviceString &&
+          host   == dev.hostString) {
+
+         // add one selection for each channel of this source
+         for (size_t j = 0; j < (unsigned int) dev.numChannels; j++) {
+            wxString name;
+
+            if (j == 0) {
+               name = _("1 (Mono) Playback Channel");
+            }
+            else if (j == 1) {
+               name = _("2 (Stereo) Playback Channels");
+            }
+            else {
+               name = wxString::Format(wxT("%d"), (int) j + 1);
+            }
+            mOutputChannels->Append(name);
+         }
+         newChannels = dev.numChannels;
+         if (oldChannels <= newChannels && oldChannels >= 1) {
+            newChannels = oldChannels;
+         }
+         if (newChannels >= 1) {
+            mOutputChannels->SetSelection(newChannels - 1);
+         }
+         AudioIOPlaybackChannels.Write(newChannels);
+         break;
+      }
+   }
+   mOutputChannels->Enable(mOutputChannels->GetCount() ? true : false);
+
+   mOutputChannels->SetMinSize(wxSize(50, wxDefaultCoord));
+}
+
 void DeviceToolBar::OnRescannedDevices(DeviceChangeMessage m)
 {
    // Hosts may have disappeared or appeared so a complete repopulate is needed.
@@ -614,6 +688,8 @@ void DeviceToolBar::SetDevices(const DeviceSourceMap *in, const DeviceSourceMap 
          AudioIOPlaybackSource.Reset();
       }
       gPrefs->Flush();
+
+      FillOutputChannels();
    }
 }
 
@@ -659,6 +735,10 @@ void DeviceToolBar::OnChoice(wxCommandEvent &event)
       int channelsSelectionIndex = mInputChannels->GetSelection();
       if (channelsSelectionIndex >= 0)
          AudioIORecordChannels.Write(channelsSelectionIndex + 1);
+   } else if (eventObject == mOutputChannels) {
+      int channelsSelectionIndex = mOutputChannels->GetSelection();
+      if (channelsSelectionIndex >= 0)
+         AudioIOPlaybackChannels.Write(channelsSelectionIndex + 1);
    } else if (eventObject == mInput) {
       ChangeDevice(true);
    }
