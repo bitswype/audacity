@@ -466,7 +466,18 @@ WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels, sampleFormat format
 
 TrackListHolder WaveTrackFactory::CreateMany(size_t nChannels, sampleFormat format, double rate)
 {
-   return TrackList::Temporary(nullptr, DoCreate(nChannels, format, rate));
+   // Mono and stereo fit in a single track; >2 channels become N mono tracks
+   // so each channel has its own strip in the UI (mute/solo/edit independently).
+   // Playback routes each mono track to a distinct output channel via
+   // ComputeChannelAssignments in the AudioIO pipeline.
+   if (nChannels <= 2) {
+      return TrackList::Temporary(nullptr, DoCreate(nChannels, format, rate));
+   }
+   auto result = TrackList::Temporary(nullptr);
+   while (nChannels--) {
+      result->Add(DoCreate(1, format, rate));
+   }
+   return result;
 }
 
 WaveTrack::Holder WaveTrackFactory::Create(size_t nChannels, const WaveTrack& proto)
