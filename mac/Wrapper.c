@@ -29,7 +29,10 @@ executable.
 #include <string.h>
 #include <unistd.h>
 
-static const char audacity[] = "Audacity";
+#ifndef AUDACITY_BIN_NAME
+#define AUDACITY_BIN_NAME "Audacity"
+#endif
+static const char audacity[] = AUDACITY_BIN_NAME;
 extern char **environ;
 
 int main(int argc, char *argv[])

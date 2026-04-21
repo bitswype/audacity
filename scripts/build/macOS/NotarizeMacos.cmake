@@ -1,111 +1,93 @@
-# CMake script to sign macOS build
+# CMake script to notarize macOS build using notarytool
+# (xcrun altool was deprecated by Apple in November 2023)
+#
 # Arguments:
-# APP_IDENTIFIER - app identifier
-# APP_LOCATION - the path to Audacity.app
-# DMG_LOCATION - the path to Audacity dmg package
-# APPLE_NOTARIZATION_USER_NAME - notarization user name
-# APPLE_NOTARIZATION_PASSWORD - notarization password
+#   APP_LOCATION             - path to .app bundle (optional)
+#   DMG_LOCATION             - path to .dmg (optional)
+#   APPLE_NOTARY_PROFILE     - keychain profile name created via
+#                              `xcrun notarytool store-credentials`
+#
+# At least one of APP_LOCATION or DMG_LOCATION must be set.
 
-# https://cmake.org/cmake/help/latest/policy/CMP0054.html
-cmake_policy( SET CMP0054 NEW )
-# https://cmake.org/cmake/help/latest/policy/CMP0011.html
-cmake_policy( SET CMP0011 NEW )
+cmake_policy(SET CMP0054 NEW)
+cmake_policy(SET CMP0011 NEW)
 
-function( get_plist_value output path key )
-    execute_process(
-        COMMAND /usr/libexec/PlistBuddy -c "Print ${key}" "${path}"
-        OUTPUT_VARIABLE result
-    )
-
-    string( STRIP ${result} result )
-
-    set( ${output} ${result} PARENT_SCOPE )
-endfunction()
-
-if( APP_LOCATION )
-    get_filename_component( temp_dir "${APP_LOCATION}/.." ABSOLUTE )
-else()
-    get_filename_component( temp_dir "${DMG_LOCATION}" DIRECTORY )
+if(NOT DEFINED APPLE_NOTARY_PROFILE OR APPLE_NOTARY_PROFILE STREQUAL "")
+    message(FATAL_ERROR
+        "APPLE_NOTARY_PROFILE not set. Create one with:\n"
+        "  xcrun notarytool store-credentials <PROFILE_NAME> --apple-id <email> --team-id <TEAMID>")
 endif()
 
-set( temp_plist "${temp_dir}/NotarizationResult.plist" )
+function(notarize_path path)
+    message(STATUS "Notarizing ${path} (this can take several minutes)")
 
-function( notarize path )
-    message( STATUS "Notarizing ${path}" )
-
-    execute_process( 
-        COMMAND 
-            xcrun altool 
-                --notarize-app
-                --primary-bundle-id "${APP_IDENTIFIER}"
-                --file "${path}"
-                --username "${APPLE_NOTARIZATION_USER_NAME}"
-                --password "${APPLE_NOTARIZATION_PASSWORD}"
-                --output-format xml 
-        OUTPUT_VARIABLE
-            result 
+    execute_process(
+        COMMAND xcrun notarytool submit
+            "${path}"
+            --keychain-profile "${APPLE_NOTARY_PROFILE}"
+            --wait
+            --output-format plist
+        OUTPUT_VARIABLE submit_output
+        RESULT_VARIABLE submit_result
     )
 
-    file( WRITE ${temp_plist} ${result} )
+    if(NOT submit_result EQUAL 0)
+        message(FATAL_ERROR "notarytool submit failed:\n${submit_output}")
+    endif()
 
-    get_plist_value( req_id ${temp_plist} "notarization-upload:RequestUUID" )
+    # Pull status and id out of the plist
+    string(REGEX MATCH "<key>status</key>[ \t\r\n]*<string>([^<]+)</string>" _ "${submit_output}")
+    set(status "${CMAKE_MATCH_1}")
+    string(REGEX MATCH "<key>id</key>[ \t\r\n]*<string>([^<]+)</string>" _ "${submit_output}")
+    set(submission_id "${CMAKE_MATCH_1}")
 
-    message( STATUS "\t Request ID: '${req_id}'" )
+    message(STATUS "  Submission id: ${submission_id}")
+    message(STATUS "  Status:        ${status}")
 
-    set( success Off )
-
-    while( NOT success )
-        execute_process(COMMAND ${CMAKE_COMMAND} -E sleep 15)
-
+    if(NOT status STREQUAL "Accepted")
+        # Pull the log so the failure reason is right in the build output
         execute_process(
-            COMMAND
-                xcrun altool 
-                    --notarization-info ${req_id}
-                    --username ${APPLE_NOTARIZATION_USER_NAME}
-                    --password ${APPLE_NOTARIZATION_PASSWORD}
-                    --output-format xml
-            OUTPUT_VARIABLE
-                result
+            COMMAND xcrun notarytool log
+                "${submission_id}"
+                --keychain-profile "${APPLE_NOTARY_PROFILE}"
+            OUTPUT_VARIABLE log_output
         )
+        message(FATAL_ERROR
+            "Notarization failed for ${path}\n"
+            "Status: ${status}\n"
+            "Log:\n${log_output}")
+    endif()
 
-        file( WRITE ${temp_plist} ${result} )
-
-        get_plist_value( notarization_result ${temp_plist} "notarization-info:Status" )
-
-        message( STATUS "\t Status: ${notarization_result}" )
-
-        if( NOT "${notarization_result}" STREQUAL "in progress" )
-            if ( NOT "${notarization_result}" STREQUAL "success" ) 
-                message(FATAL_ERROR "Notarization failed:\n${result}\n")
-            else()
-                message(STATUS "Notarization successful")
-            endif()
-
-            break()
-        endif()
-    endwhile()
+    message(STATUS "  Stapling ticket")
+    execute_process(
+        COMMAND xcrun stapler staple "${path}"
+        RESULT_VARIABLE staple_result
+    )
+    if(NOT staple_result EQUAL 0)
+        message(FATAL_ERROR "stapler staple failed for ${path}")
+    endif()
 endfunction()
 
-if( DEFINED APP_LOCATION )
-    get_filename_component( archive "${APP_LOCATION}/../notarization.zip" ABSOLUTE )
-    
+if(DEFINED APP_LOCATION AND NOT APP_LOCATION STREQUAL "")
+    # notarytool wants .zip / .dmg / .pkg — zip the .app first
+    get_filename_component(parent "${APP_LOCATION}/.." ABSOLUTE)
+    set(archive "${parent}/notarization.zip")
+
     execute_process(
-        COMMAND
-            xcrun ditto 
-                -c -k --keepParent 
-                ${APP_LOCATION}
-                ${archive}    
+        COMMAND xcrun ditto -c -k --keepParent "${APP_LOCATION}" "${archive}"
+        RESULT_VARIABLE ditto_result
     )
+    if(NOT ditto_result EQUAL 0)
+        message(FATAL_ERROR "ditto failed to create ${archive}")
+    endif()
 
-    notarize( ${archive} )
-    execute_process( COMMAND stapler staple "${APP_LOCATION}" )
+    notarize_path("${archive}")
+    # Staple the .app, not the zip
+    execute_process(COMMAND xcrun stapler staple "${APP_LOCATION}")
 
-    file( REMOVE "${APP_LOCATION}/../notarization.zip" )
+    file(REMOVE "${archive}")
 endif()
 
-if( DEFINED DMG_LOCATION )
-    notarize( ${DMG_LOCATION} )
-    execute_process( COMMAND stapler staple "${DMG_LOCATION}" )
+if(DEFINED DMG_LOCATION AND NOT DMG_LOCATION STREQUAL "")
+    notarize_path("${DMG_LOCATION}")
 endif()
-
-file( REMOVE ${temp_plist} )

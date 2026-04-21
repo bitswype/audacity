@@ -207,17 +207,17 @@
 	<key>CFBundleExecutable</key>
 	<string>Wrapper</string>
 	<key>CFBundleGetInfoString</key>
-	<string>Audacity version ${AUDACITY_INFO_VERSION}</string>
+	<string>Audacity-MC version ${AUDACITY_INFO_VERSION}</string>
 	<key>CFBundleIconFile</key>
 	<string>Audacity.icns</string>
 	<key>CFBundleIdentifier</key>
-	<string>org.audacityteam.audacity</string>
+	<string>com.bitswype.audacity-mc</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleLongVersionString</key>
 	<string>Version ${AUDACITY_INFO_VERSION}</string>
 	<key>CFBundleName</key>
-	<string>Audacity</string>
+	<string>Audacity-MC</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>

@@ -1158,6 +1158,10 @@ elseif( CMAKE_SYSTEM_NAME MATCHES "Darwin" )
    add_executable( Wrapper "${WRAPPER_SOURCES}" )
    add_dependencies( ${TARGET} Wrapper )
 
+   # Tell the wrapper which inner binary to exec (matches AUDACITY_NAME so
+   # forks like Audacity-MC don't break the launcher).
+   target_compile_definitions( Wrapper PRIVATE AUDACITY_BIN_NAME="${AUDACITY_NAME}" )
+
    set_target_property_all( Wrapper RUNTIME_OUTPUT_DIRECTORY "${WRAPPER_EXEDIR}" )
    organize_source( "${WRAPPER_ROOT}" "mac" "${WRAPPER_SOURCES}" )
 

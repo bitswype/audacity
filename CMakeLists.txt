@@ -589,11 +589,17 @@ if( NOT CMAKE_INSTALL_LIBDIR STREQUAL "lib" AND NOT EXISTS "${CMAKE_BINARY_DIR}/
    file( CREATE_LINK "${CMAKE_BINARY_DIR}/lib" "${CMAKE_BINARY_DIR}/lib64" SYMBOLIC )
 endif()
 
-# Define Audacity's name
-if( CMAKE_SYSTEM_NAME MATCHES "Darwin|Windows" )
+# Define the app name used for the executable / .app bundle / .desktop file.
+# bitswype fork: rename to Audacity-MC so the bundle (Audacity-MC.app on Mac,
+# Audacity-MC executable on Windows) doesn't collide with upstream Audacity.
+if( CMAKE_SYSTEM_NAME MATCHES "Darwin" )
+   set( AUDACITY_NAME "Audacity-MC" )
+elseif( CMAKE_SYSTEM_NAME MATCHES "Windows" )
+   # Keep the Windows binary as "Audacity.exe" -- the installer renames the
+   # install dir to Audacity-MC and shortcuts use the AppName resource.
    set( AUDACITY_NAME "Audacity" )
 else()
-   set( AUDACITY_NAME "audacity" )
+   set( AUDACITY_NAME "audacity-mc" )
 endif()
 
 # Create short and full version strings
