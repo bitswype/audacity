@@ -17,8 +17,11 @@ set( PIXMAPS
 
 if( NOT CMAKE_SYSTEM_NAME MATCHES "Darwin" )
    if( NOT "${CMAKE_GENERATOR}" MATCHES "Visual Studio*")
+      # Install under AUDACITY_NAME so the fork's .desktop Icon= entry
+      # matches (e.g. audacity-mc.svg for the bitswype fork).
       install( FILES "${_SRCDIR}/audacity.svg"
-               DESTINATION "${_DATADIR}/icons/hicolor/scalable/apps" )
+               DESTINATION "${_DATADIR}/icons/hicolor/scalable/apps"
+               RENAME "${AUDACITY_NAME}.svg" )
       install( DIRECTORY "${_SRCDIR}/icons/"
                DESTINATION "${_DATADIR}/icons/hicolor"
                FILES_MATCHING PATTERN "*.png" )

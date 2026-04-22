@@ -120,8 +120,8 @@ linuxdeploy --list-plugins
 sed -i 's|env UBUNTU_MENUPROXY=0 ||' "${appdir}/share/applications/audacity.desktop"
 ln -sf --no-dereference . "${appdir}/usr"
 ln -sf share/applications/audacity.desktop "${appdir}/audacity.desktop"
-ln -sf share/icons/hicolor/scalable/apps/audacity.svg "${appdir}/audacity.svg"
-ln -sf share/icons/hicolor/scalable/apps/audacity.svg "${appdir}/.DirIcon"
+ln -sf share/icons/hicolor/scalable/apps/audacity-mc.svg "${appdir}/audacity.svg"
+ln -sf share/icons/hicolor/scalable/apps/audacity-mc.svg "${appdir}/.DirIcon"
 
 #============================================================================
 # Bundle dependencies
