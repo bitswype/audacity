@@ -635,6 +635,8 @@ set( SOURCES
       toolbars/EditToolBar.h
       toolbars/MeterToolBar.cpp
       toolbars/MeterToolBar.h
+      toolbars/PlaybackRoutingDialog.cpp
+      toolbars/PlaybackRoutingDialog.h
       toolbars/SelectionBar.cpp
       toolbars/SelectionBar.h
       toolbars/SnappingToolBar.cpp
