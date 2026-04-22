@@ -231,11 +231,21 @@ struct WaveTrackData : ClientData::Cloneable<> {
    int GetRate() const;
    void SetRate(int value);
 
+   uint64_t GetPlaybackOutputMask() const;
+   void SetPlaybackOutputMask(uint64_t mask);
+
 private:
    //! Atomic because it may be read by worker threads in playback
    std::atomic<float> mGain{ 1.0f };
    //! Atomic because it may be read by worker threads in playback
    std::atomic<float> mPan{ 0.0f };
+
+   //! Bitmask of device output channels this track routes to during
+   //! playback. Bit N set == send the track's audio to output channel N.
+   //! Value 0 means "use default identity routing from
+   //! ComputeChannelAssignments" (no user override).
+   //! Atomic because read by the audio worker thread during playback.
+   std::atomic<uint64_t> mPlaybackOutputMask{ 0 };
 
    int mRate{ 44100 };
    double mOrigin{ 0.0 };
@@ -250,6 +260,7 @@ waveTrackDataFactory{
 WaveTrackData::WaveTrackData(const WaveTrackData &other) {
    SetVolume(other.GetVolume());
    SetPan(other.GetPan());
+   SetPlaybackOutputMask(other.GetPlaybackOutputMask());
    mRate = other.mRate;
    mOrigin = other.mOrigin;
    mFormat = other.mFormat;
@@ -317,6 +328,16 @@ int WaveTrackData::GetRate() const
 void WaveTrackData::SetRate(int value)
 {
    mRate = value;
+}
+
+uint64_t WaveTrackData::GetPlaybackOutputMask() const
+{
+   return mPlaybackOutputMask.load(std::memory_order_relaxed);
+}
+
+void WaveTrackData::SetPlaybackOutputMask(uint64_t mask)
+{
+   mPlaybackOutputMask.store(mask, std::memory_order_relaxed);
 }
 
 namespace {
@@ -891,6 +912,19 @@ void WaveTrack::SetPan(float newPan)
 
    if ( GetPan() != newPan ) {
       DoSetPan(newPan);
+      Notify(true);
+   }
+}
+
+uint64_t WaveTrack::GetPlaybackOutputMask() const
+{
+   return WaveTrackData::Get(*this).GetPlaybackOutputMask();
+}
+
+void WaveTrack::SetPlaybackOutputMask(uint64_t mask)
+{
+   if (GetPlaybackOutputMask() != mask) {
+      WaveTrackData::Get(*this).SetPlaybackOutputMask(mask);
       Notify(true);
    }
 }
@@ -2449,6 +2483,11 @@ static constexpr auto Linked_attr = "linked";
 static constexpr auto NChannels_attr = "nchannels";
 static constexpr auto SampleFormat_attr = "sampleformat";
 static constexpr auto Channel_attr = "channel"; // write-only!
+//! bitswype fork: per-track playback output routing mask (see
+//! WaveTrack::GetPlaybackOutputMask).  Stored as hex for readability.
+//! Upstream Audacity ignores unknown attributes, so projects
+//! round-trip cleanly even if someone opens them in upstream.
+static constexpr auto OutputMask_attr = "outputmask";
 
 bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &attrs)
 {
@@ -2492,6 +2531,12 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &
          else if (attr == NChannels_attr && value.TryGet(nValue) &&
                   nValue > 0)
             mLegacyNChannels = static_cast<int>(nValue);
+         else if (attr == OutputMask_attr) {
+            // bitswype fork: per-track playback output routing mask.
+            unsigned long long maskValue = 0;
+            if (value.TryGet(maskValue))
+               SetPlaybackOutputMask(static_cast<uint64_t>(maskValue));
+         }
          else if (attr == SampleFormat_attr && value.TryGet(nValue) &&
                   Sequence::IsValidSampleFormat(nValue))
          {
@@ -2622,6 +2667,15 @@ void WaveTrack::WriteOneXML(const WaveChannel &channel, XMLWriter &xmlFile,
    // unknown attributes, so this is backward-compatible.
    if (iChannel == 0 && nChannels > 2)
       xmlFile.WriteAttr(NChannels_attr, static_cast<long>(nChannels));
+
+   // bitswype fork: per-track playback output routing mask.  Only write
+   // when non-default so upstream projects stay byte-identical when
+   // nothing has been explicitly routed.
+   if (iChannel == 0) {
+      const auto mask = track.GetPlaybackOutputMask();
+      if (mask != 0)
+         xmlFile.WriteAttr(OutputMask_attr, static_cast<size_t>(mask));
+   }
 
    // VS: trying to save tracks that didn't pass all necessary
    // initializations on project read from the disk.

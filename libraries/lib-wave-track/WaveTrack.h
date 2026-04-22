@@ -19,6 +19,7 @@
 #include "SampleTrack.h"
 #include "WideSampleSequence.h"
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -320,6 +321,16 @@ public:
    float GetPan() const;
    void SetPan(float newPan);
 
+   //! Bitmask of device output channels this track routes to during
+   //! multi-channel playback. Bit N set means "play on output channel N".
+   //! A value of 0 means "use default identity routing" (no explicit
+   //! user assignment) -- this is the value used for all tracks until
+   //! the user opens the Playback Routing dialog and sets something.
+   //! Also overrides PlayableSequence::GetPlaybackOutputMask so that
+   //! AudioIO can consume the mask without downcasting.
+   uint64_t GetPlaybackOutputMask() const override;
+   void SetPlaybackOutputMask(uint64_t mask);
+
    //! Takes volume and pan into account
    float GetChannelVolume(int channel) const override;
 
@@ -481,6 +492,9 @@ public:
    const ChannelGroup *FindChannelGroup() const override;
    bool GetMute() const override;
    bool GetSolo() const override;
+   //! GetPlaybackOutputMask also overrides PlayableSequence::
+   //! GetPlaybackOutputMask; see the public non-virtual declaration above
+   //! the GetChannelVolume override.
    //! @}
 
    ///

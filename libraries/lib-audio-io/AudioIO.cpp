@@ -1326,14 +1326,22 @@ bool AudioIO::AllocateBuffers(
                [=]{ return std::make_unique<RingBuffer>(floatSample, playbackBufferSize); }
             );
 
-            // Compute per-track output channel assignments
+            // Compute per-track output channel assignments.  We collect
+            // channel counts and per-track masks (0 for tracks with no
+            // explicit routing) and let ChannelRouting decide the rest.
             {
                std::vector<size_t> trackChannelCounts;
+               std::vector<uint64_t> trackOutputMasks;
                trackChannelCounts.reserve(mPlaybackSequences.size());
-               for (const auto& seq : mPlaybackSequences)
+               trackOutputMasks.reserve(mPlaybackSequences.size());
+               for (const auto& seq : mPlaybackSequences) {
                   trackChannelCounts.push_back(seq ? seq->NChannels() : 0);
+                  trackOutputMasks.push_back(
+                     seq ? seq->GetPlaybackOutputMask() : 0);
+               }
                mChannelAssignments = ComputeChannelAssignments(
-                  trackChannelCounts, mNumPlaybackChannels);
+                  trackChannelCounts, trackOutputMasks,
+                  mNumPlaybackChannels);
             }
 
             mPlaybackMixers.clear();
@@ -2221,9 +2229,12 @@ bool AudioIO::ProcessPlaybackSlices(
       buffer.resize(samplesAvailable, 0);
    }
 
-   // 4-case channel routing using mChannelAssignments from
-   // ComputeChannelAssignments(). Each track gets routed to the
-   // correct output channels based on its assignment.
+   // Channel routing using mChannelAssignments from
+   // ComputeChannelAssignments(). A track's assignment can be either:
+   //   - outputMask != 0: user-specified bitmask of output channels
+   //     (5th case: mask-driven routing)
+   //   - outputMask == 0: auto-routing, with 4 sub-cases based on the
+   //     computed outputChannel.
    {
       unsigned bufferIndex = 0;
       unsigned trackIndex = 0;
@@ -2241,8 +2252,32 @@ bool AudioIO::ProcessPlaybackSlices(
             (trackIndex < mChannelAssignments.size())
             ? mChannelAssignments[trackIndex].outputChannel
             : -1;
+         const uint64_t outputMask =
+            (trackIndex < mChannelAssignments.size())
+            ? mChannelAssignments[trackIndex].outputMask
+            : 0;
 
-         if (assignedOutput >= 0 && numChannels > 1) {
+         if (outputMask != 0) {
+            // Mask-driven routing: iterate set bits in the mask and
+            // distribute source channels sequentially.  Mono sources
+            // duplicate to every set bit; multi-channel sources walk
+            // through their channels in order.
+            unsigned srcChannel = 0;
+            for (unsigned outCh = 0; outCh < mNumPlaybackChannels; ++outCh) {
+               if (!(outputMask & (uint64_t(1) << outCh)))
+                  continue;
+               const unsigned srcToUse = (numChannels > 1)
+                  ? std::min<unsigned>(srcChannel,
+                     static_cast<unsigned>(numChannels) - 1u)
+                  : 0u;
+               const float volume = seq->GetChannelVolume(srcToUse);
+               for (unsigned i = 0; i < samplesAvailable; ++i)
+                  mMasterBuffers[outCh][i] +=
+                     mProcessingBuffers[bufferIndex + srcToUse][i] * volume;
+               if (numChannels > 1)
+                  ++srcChannel;
+            }
+         } else if (assignedOutput >= 0 && numChannels > 1) {
             // Multi-channel track with assigned output: identity routing
             // from assigned output channel onwards
             const auto startCh = static_cast<unsigned>(assignedOutput);

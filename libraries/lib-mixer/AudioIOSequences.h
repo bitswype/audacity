@@ -13,6 +13,7 @@
 #define __AUDACITY_AUDIO_IO_SEQUENCES__
 
 #include "WideSampleSequence.h"
+#include <cstdint>
 class ChannelGroup;
 
 /*!
@@ -30,6 +31,12 @@ struct MIXER_API PlayableSequence : WideSampleSequence {
 
    //! May vary asynchronously
    virtual bool GetMute() const = 0;
+
+   //! bitswype fork: bitmask of device output channels this sequence should
+   //! play on during multi-channel playback.  Default 0 means "use
+   //! automatic identity routing".  Overridden by WaveTrack to forward the
+   //! user's choice from the Playback Routing dialog.
+   virtual uint64_t GetPlaybackOutputMask() const { return 0; }
 };
 
 using ConstPlayableSequences =
