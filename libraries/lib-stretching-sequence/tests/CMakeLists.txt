@@ -20,6 +20,7 @@ add_unit_test(
       MockSampleBlockFactory.cpp
       MockSampleBlockFactory.h
       MockPlayableSequence.h
+      PlaybackRoutingIntegrationTest.cpp
       SilenceSegmentTest.cpp
       StretchingSequenceTest.cpp
       StretchingSequenceIntegrationTest.cpp
