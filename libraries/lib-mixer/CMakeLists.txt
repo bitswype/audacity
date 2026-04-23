@@ -38,6 +38,8 @@ set( SOURCES
    MixerOptions.h
    MixerSource.cpp
    MixerSource.h
+   RouteTrackSamples.cpp
+   RouteTrackSamples.h
    WideSampleSequence.cpp
    WideSampleSequence.h
    WideSampleSource.cpp
