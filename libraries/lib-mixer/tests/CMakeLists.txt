@@ -8,6 +8,7 @@ add_unit_test(
       lib-mixer
    SOURCES
       ChannelRoutingTest.cpp
+      RouteTrackSamplesTest.cpp
    LIBRARIES
       lib-mixer
 )
