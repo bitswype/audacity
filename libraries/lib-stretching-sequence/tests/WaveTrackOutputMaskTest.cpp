@@ -23,8 +23,11 @@
 
 #include <catch2/catch.hpp>
 
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <memory>
+#include <thread>
 
 namespace
 {
@@ -194,4 +197,57 @@ TEST_CASE(
    // before any such failure. Either way, the mask must be set.
    (void)ok;
    REQUIRE(target->GetPlaybackOutputMask() == 0xFEEDFACEull);
+}
+
+TEST_CASE("PlaybackOutputMask tolerates concurrent reader and writer",
+          "[WaveTrack][OutputMask][Threading]")
+{
+   // The mask is std::atomic<uint64_t> so that the audio thread can read
+   // it while the UI thread writes it without a lock.  On 32-bit systems
+   // a non-atomic uint64_t load/store is two separate 32-bit operations
+   // and the reader could observe a torn value (high half from the old
+   // value, low half from the new).  This test catches a future refactor
+   // that accidentally drops the atomic wrapper.
+   //
+   // The two values below differ in BOTH the high 32 bits and the low
+   // 32 bits, so a torn read would produce a mask that equals neither
+   // -- and the test would fail.
+
+   const auto track = gTrackMaker.Track(WaveClipHolders {});
+
+   constexpr uint64_t kValueA = 0x1111'1111'AAAA'AAAAull;
+   constexpr uint64_t kValueB = 0xFFFF'FFFF'5555'5555ull;
+
+   track->SetPlaybackOutputMask(kValueA);
+
+   std::atomic<bool> stop { false };
+   std::atomic<uint64_t> tornReadCount { 0 };
+   std::atomic<uint64_t> readCount { 0 };
+
+   std::thread reader([&] {
+      while (!stop.load(std::memory_order_relaxed)) {
+         const auto value = track->GetPlaybackOutputMask();
+         ++readCount;
+         if (value != kValueA && value != kValueB)
+            ++tornReadCount;
+      }
+   });
+
+   std::thread writer([&] {
+      for (int i = 0; i < 100000; ++i) {
+         track->SetPlaybackOutputMask((i & 1) ? kValueB : kValueA);
+      }
+   });
+
+   writer.join();
+   stop.store(true, std::memory_order_relaxed);
+   reader.join();
+
+   // The reader must have observed only the two intended values --
+   // never a torn mix of the high half of one and the low half of the
+   // other.  We also require the reader ran enough iterations to make
+   // this a meaningful assertion on a typical dev box; if this ever
+   // flakes due to scheduler contention, bump the writer's loop count.
+   REQUIRE(tornReadCount.load() == 0);
+   REQUIRE(readCount.load() > 0);
 }
