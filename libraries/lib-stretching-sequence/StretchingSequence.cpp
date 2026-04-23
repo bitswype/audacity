@@ -113,6 +113,11 @@ bool StretchingSequence::GetMute() const
    return mSequence.GetMute();
 }
 
+uint64_t StretchingSequence::GetPlaybackOutputMask() const
+{
+   return mSequence.GetPlaybackOutputMask();
+}
+
 double StretchingSequence::GetStartTime() const
 {
    return mSequence.GetStartTime();
