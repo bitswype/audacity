@@ -23,14 +23,17 @@ add_unit_test(
       SilenceSegmentTest.cpp
       StretchingSequenceTest.cpp
       StretchingSequenceIntegrationTest.cpp
+      StretchingSequenceMaskForwardingTest.cpp
       TestWaveClipMaker.cpp
       TestWaveClipMaker.h
       TestWaveTrackMaker.cpp
       TestWaveTrackMaker.h
+      WaveTrackOutputMaskTest.cpp
    MOCK_PREFS
    MOCK_AUDIO
    WAV_FILE_IO
    LIBRARIES
       lib-stretching-sequence
       lib-wave-track
+      lib-xml
 )

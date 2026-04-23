@@ -12,6 +12,8 @@
 
 #include "AudioIOSequences.h"
 
+#include <cstdint>
+
 class MockPlayableSequence final : public PlayableSequence
 {
 public:
@@ -19,6 +21,15 @@ public:
        : sampleRate(sampleRate)
        , numChannels(numChannels)
    {
+   }
+
+   //! Mutable so tests can change it post-construction and verify that
+   //! decorators forward the value live (not cached at wrap time).
+   uint64_t playbackOutputMask = 0;
+
+   uint64_t GetPlaybackOutputMask() const override
+   {
+      return playbackOutputMask;
    }
 
    // WideSampleSequence
