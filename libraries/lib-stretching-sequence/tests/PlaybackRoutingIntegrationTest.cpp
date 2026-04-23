@@ -25,7 +25,7 @@
 #include "TestWaveClipMaker.h"
 #include "TestWaveTrackMaker.h"
 
-#include "ChannelRouting.h"
+#include "ChannelRouting.h" // also provides kPlaybackRoutingSilentSentinel
 #include "RouteTrackSamples.h"
 #include "StretchingSequence.h"
 #include "WaveTrack.h"
@@ -259,6 +259,36 @@ TEST_CASE(
       CAPTURE(outCh);
       REQUIRE(master[outCh][0] == Catch::Detail::Approx(expected));
    }
+}
+
+TEST_CASE(
+   "Pipeline: explicit-silent sentinel silences a track end-to-end",
+   "[Integration][Routing]")
+{
+   // Simulates the dialog's "user unchecked every box on this row"
+   // case.  A track with mask = kPlaybackRoutingSilentSentinel must
+   // produce no audio anywhere, while neighboring tracks route
+   // normally.  Distinct from mask = 0 (auto), which on a stereo
+   // device duplicates mono across both outputs.
+   const size_t samples = 16;
+
+   std::vector<PipelineRunner::TrackInput> inputs;
+   inputs.push_back({
+      MakeMonoTrack(1.f, samples),
+      { std::vector<float>(samples, 1.f) },
+      kPlaybackRoutingSilentSentinel, // silenced
+   });
+   inputs.push_back({
+      MakeMonoTrack(4.f, samples),
+      { std::vector<float>(samples, 4.f) },
+      0, // auto -> duplicates to both outputs on a stereo device
+   });
+
+   const auto master = PipelineRunner::Run(inputs, /*numOutputChannels=*/2, samples);
+
+   // Only the auto track contributes; silenced track is gone.
+   REQUIRE(master[0][0] == Catch::Detail::Approx(4.f));
+   REQUIRE(master[1][0] == Catch::Detail::Approx(4.f));
 }
 
 TEST_CASE(

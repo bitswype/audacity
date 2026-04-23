@@ -489,6 +489,60 @@ TEST_CASE("Default-constructed assignment is case 3 for stereo",
    REQUIRE(f.master(1) == 3.f);
 }
 
+TEST_CASE("Silent sentinel (bit 63) produces no audio for realistic device sizes",
+          "[RouteTrackSamples]")
+{
+   // The Playback Routing dialog stores "explicitly silent" as
+   // kPlaybackRoutingSilentSentinel (bit 63 set, no other bits).  On
+   // any realistic device (numOutputChannels <= 32 in practice, and
+   // the dialog caps user checkboxes at 63), the routing loop
+   // iterates output channels 0..numOutputChannels-1 and never
+   // touches bit 63 -- so the track produces no audio.  This test
+   // locks that behavior in.
+   RoutingFixture f(1, 2, 8);
+   f.fillSource(0, 5.f);
+   TrackChannelAssignment assignment;
+   assignment.outputMask = kPlaybackRoutingSilentSentinel;
+
+   RouteTrackSamples(assignment, 1, 2, f.samplesAvailable,
+                     [](int) { return 1.f; },
+                     f.procBuffers(), f.masterBuffers());
+
+   REQUIRE(f.master(0) == 0.f);
+   REQUIRE(f.master(1) == 0.f);
+   // Source not mutated.
+   REQUIRE(f.source(0) == 5.f);
+}
+
+TEST_CASE("Silent sentinel leaves other tracks' routing intact",
+          "[RouteTrackSamples]")
+{
+   // Two mono tracks both targeting output 0 on a stereo device: one
+   // is explicitly silent (sentinel), the other is normal (mask 0x1).
+   // Only the normal track contributes.
+   std::vector<float> m0(4, 0.f);
+   std::vector<float> m1(4, 0.f);
+   std::array<float*, 2> masters = { m0.data(), m1.data() };
+
+   std::vector<float> procA(4, 7.f);
+   float* pA[] = { procA.data() };
+   std::vector<float> procB(4, 3.f);
+   float* pB[] = { procB.data() };
+
+   TrackChannelAssignment silent;
+   silent.outputMask = kPlaybackRoutingSilentSentinel;
+   TrackChannelAssignment normal;
+   normal.outputMask = 0b01;
+
+   RouteTrackSamples(silent, 1, 2, 4,
+                     [](int) { return 1.f; }, pA, masters.data());
+   RouteTrackSamples(normal, 1, 2, 4,
+                     [](int) { return 1.f; }, pB, masters.data());
+
+   REQUIRE(m0[0] == 3.f); // only the non-silent track contributes
+   REQUIRE(m1[0] == 0.f);
+}
+
 TEST_CASE("Mask takes priority over outputChannel when both are set",
           "[RouteTrackSamples]")
 {

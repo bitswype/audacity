@@ -17,6 +17,20 @@
 #include <cstdint>
 #include <vector>
 
+//! Sentinel mask value meaning "this track is explicitly silenced"
+//! (no playback on any output).  Distinct from @c outputMask == 0,
+//! which means "fall back to auto routing".
+//!
+//! Implemented by setting bit 63, which is out of range for every
+//! realistic playback device (PortAudio, CoreAudio, WASAPI and ALSA
+//! each impose channel caps well below 64).  The routing loop in
+//! @c RouteTrackSamples iterates output channels from 0 to
+//! @c numOutputChannels, so bit 63 is never inspected and the track
+//! produces no output.  Callers that build checkbox UIs on top of
+//! this mask MUST leave bit 63 alone -- cap the user-visible
+//! channels at 63 to keep the sentinel unambiguous.
+constexpr uint64_t kPlaybackRoutingSilentSentinel = uint64_t(1) << 63;
+
 //! Per-track output channel assignment for multi-channel playback.
 //!
 //! Two ways a track can be routed:
