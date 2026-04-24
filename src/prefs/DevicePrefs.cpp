@@ -23,6 +23,7 @@ other settings.
 *//********************************************************************/
 #include "DevicePrefs.h"
 #include "AudioIOBase.h"
+#include "PlaybackOutputMask.h"
 
 #include "IteratorX.h"
 #include "RecordingPrefs.h"
@@ -484,15 +485,11 @@ void DevicePrefs::OnPlayDevice(wxCommandEvent & WXUNUSED(event))
    if (cnt > 256)
       cnt = 256;
 
-   // NOTE: mask storage uses a uint64_t, and bit 63 is reserved as
-   // the Playback Routing "explicit silent" sentinel (see
-   // kPlaybackRoutingSilentSentinel in ChannelRouting.h).  The
-   // Playback Routing dialog caps its columns at 63 for that reason.
-   // Here we're picking how many channels PortAudio will open the
-   // device with, not a mask -- so values 1..63 all work. Still,
-   // cap at 63 so the two controls agree on their maximum.
-   if (cnt > 63)
-      cnt = 63;
+   // Playback Routing dialog supports up to 128 columns (matches
+   // PlaybackOutputMask's 128-bit width).  Cap this dropdown at the
+   // same number so the two controls agree.
+   if (cnt > static_cast<int>(kPlaybackOutputMaskBits))
+      cnt = static_cast<int>(kPlaybackOutputMaskBits);
 
    wxArrayStringEx channelnames;
    for (int i = 0; i < cnt; i++) {
