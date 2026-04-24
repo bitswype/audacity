@@ -15,100 +15,41 @@
 #include <wx/stattext.h>
 
 #include "AudioIOBase.h"        // for AudioIOPlaybackChannels
-#include "ChannelRouting.h"     // kPlaybackRoutingSilentSentinel, ComputeChannelAssignments
+#include "PlaybackOutputMask.h"
 #include "Project.h"
 #include "ShuttleGui.h"
 #include "Track.h"
 #include "WaveTrack.h"
 
 namespace {
-// Bit 63 of the mask is reserved as the silent sentinel in
-// lib-mixer/ChannelRouting.h.  Cap user-visible channels at 63 so a
-// user can never accidentally build a checkbox state that collides
-// with the sentinel.  Realistic devices are well under this limit.
-constexpr size_t kMaxOutputChannels = 63;
+//! Upper bound on columns the dialog will ever display.  Matches the
+//! width of the underlying mask.  Realistic devices are far below
+//! this, but the dialog will scroll horizontally if needed.
+constexpr size_t kMaxDisplayChannels = kPlaybackOutputMaskBits;
 
-//! Compute the mask the engine's auto routing would assign to a row,
-//! given per-row track channel counts and (current) per-row masks.
-//! The row's own mask is forced to 0 before calling
-//! ComputeChannelAssignments so the result is what the engine would
-//! do if the row were in Auto mode.
-uint64_t AutoMaskFromAssignment(
-   size_t rowIndex, size_t numOutputChannels,
-   const std::vector<size_t>& counts)
+//! Read the first @p numChannels checkboxes into a PlaybackOutputMask.
+PlaybackOutputMask MaskFromCheckboxes(
+   const std::vector<wxCheckBox*>& checks, size_t numChannels)
 {
-   // All masks 0 -> everybody auto -> result shows pure auto layout
-   // from the row's point of view.  Using other rows' current
-   // explicit masks would be marginally more accurate, but the "pure
-   // auto" answer is the predictable one for users: Reset restores
-   // the layout you would have had on a fresh project.
-   std::vector<uint64_t> masks(counts.size(), 0);
-   const auto assignments = ComputeChannelAssignments(
-      counts, masks, numOutputChannels);
-   if (rowIndex >= assignments.size())
-      return 0;
-
-   const auto& a = assignments[rowIndex];
-   const auto channels = counts[rowIndex];
-   uint64_t mask = 0;
-
-   if (a.outputChannel >= 0) {
-      // Identity routing starting at outputChannel.  Multi-channel
-      // tracks spread across consecutive outputs.
-      const auto startCh = static_cast<size_t>(a.outputChannel);
-      const auto n = channels > 0 ? channels : size_t{1};
-      for (size_t i = 0; i < n; ++i) {
-         const size_t ch = startCh + i;
-         if (ch < numOutputChannels)
-            mask |= (uint64_t(1) << ch);
-      }
-      return mask;
-   }
-
-   // Legacy (outputChannel == -1).  Matches RouteTrackSamples:
-   // - mono source: duplicate to every output
-   // - multi-channel source: identity from channel 0
-   if (channels <= 1) {
-      for (size_t ch = 0; ch < numOutputChannels; ++ch)
-         mask |= (uint64_t(1) << ch);
-   } else {
-      const auto n = std::min<size_t>(channels, numOutputChannels);
-      for (size_t i = 0; i < n; ++i)
-         mask |= (uint64_t(1) << i);
-   }
-   return mask;
-}
-
-//! Read a row's checkboxes into a bitmask.
-uint64_t MaskFromCheckboxes(const std::vector<wxCheckBox*>& checks)
-{
-   uint64_t mask = 0;
-   for (size_t i = 0; i < checks.size() && i < kMaxOutputChannels; ++i)
+   PlaybackOutputMask mask;
+   const auto cap = std::min(
+      std::min(checks.size(), numChannels), kMaxDisplayChannels);
+   for (size_t i = 0; i < cap; ++i)
       if (checks[i] && checks[i]->GetValue())
-         mask |= (uint64_t(1) << i);
+         mask.set(static_cast<unsigned>(i));
    return mask;
 }
 
-//! Set a row's checkboxes to match a bitmask.
+//! Set the first @p numChannels checkboxes to match a mask.
 void CheckboxesFromMask(
-   const std::vector<wxCheckBox*>& checks, uint64_t mask)
+   const std::vector<wxCheckBox*>& checks, const PlaybackOutputMask& mask,
+   size_t numChannels)
 {
-   for (size_t i = 0; i < checks.size() && i < kMaxOutputChannels; ++i)
+   const auto cap = std::min(
+      std::min(checks.size(), numChannels), kMaxDisplayChannels);
+   for (size_t i = 0; i < cap; ++i)
       if (checks[i])
-         checks[i]->SetValue((mask & (uint64_t(1) << i)) != 0);
-}
-
-//! Map a stored mask value back to the initial dialog Intent.
-//!   0                          -> Auto
-//!   kPlaybackRoutingSilentSentinel -> Silent
-//!   anything else              -> Explicit
-PlaybackRoutingDialog::Intent IntentFromStoredMask(uint64_t stored)
-{
-   if (stored == 0)
-      return PlaybackRoutingDialog::Intent::Auto;
-   if (stored == kPlaybackRoutingSilentSentinel)
-      return PlaybackRoutingDialog::Intent::Silent;
-   return PlaybackRoutingDialog::Intent::Explicit;
+         checks[i]->SetValue(mask.test(static_cast<unsigned>(i)));
 }
 } // namespace
 
@@ -125,8 +66,8 @@ PlaybackRoutingDialog::PlaybackRoutingDialog(
    auto requested = AudioIOPlaybackChannels.ReadWithDefault(2);
    if (requested < 1)
       requested = 1;
-   if (requested > static_cast<int>(kMaxOutputChannels))
-      requested = static_cast<int>(kMaxOutputChannels);
+   if (requested > static_cast<int>(kMaxDisplayChannels))
+      requested = static_cast<int>(kMaxDisplayChannels);
    mNumOutputChannels = static_cast<size_t>(requested);
 
    BuildUI(focusedTrack);
@@ -134,29 +75,15 @@ PlaybackRoutingDialog::PlaybackRoutingDialog(
 
 PlaybackRoutingDialog::~PlaybackRoutingDialog() = default;
 
-uint64_t PlaybackRoutingDialog::ComputeAutoMaskForRow(int rowIndex) const
-{
-   if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= mRows.size())
-      return 0;
-   std::vector<size_t> counts;
-   counts.reserve(mRows.size());
-   for (const auto& row : mRows)
-      counts.push_back(row.track ? row.track->NChannels() : 0);
-   return AutoMaskFromAssignment(
-      static_cast<size_t>(rowIndex), mNumOutputChannels, counts);
-}
-
 void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
 {
    auto *outer = new wxBoxSizer(wxVERTICAL);
 
-   // Header text explaining the semantics.  Empty row != Auto; this
-   // line calls that out so the user isn't surprised.
    auto *header = new wxStaticText(this, wxID_ANY,
       XO("Each checkbox routes a track's audio to the corresponding "
          "device output channel.\n"
          "An empty row means the track is silenced (no playback). "
-         "Use Reset to return a row to automatic routing.")
+         "Use Reset to restore identity routing for a row.")
          .Translation());
    outer->Add(header, 0, wxEXPAND | wxALL, 8);
 
@@ -179,18 +106,14 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
    grid->Add(new wxStaticText(mMatrixPanel, wxID_ANY, _("Reset")),
              0, wxALIGN_CENTER, 0);
 
-   // Seed rows with track refs and their stored masks so the
-   // auto-routing pass can see channel counts.
    auto &tracks = TrackList::Get(mProject);
    for (auto pTrack : tracks.Any<WaveTrack>()) {
       TrackRow row;
       row.track = pTrack;
       row.originalStoredMask = pTrack->GetPlaybackOutputMask();
-      row.intent = IntentFromStoredMask(row.originalStoredMask);
       mRows.push_back(std::move(row));
    }
 
-   // Now build the widgets and set initial checkbox state.
    wxWindow *focusTarget = nullptr;
    for (size_t rowIndex = 0; rowIndex < mRows.size(); ++rowIndex) {
       auto &row = mRows[rowIndex];
@@ -199,36 +122,11 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
                                  row.track->GetName()),
                 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 2);
 
-      // Each row gets mNumOutputChannels checkboxes.  Initial values
-      // depend on intent:
-      //   Auto     -> show the effective auto-routing bits
-      //   Explicit -> show the stored mask bits
-      //   Silent   -> nothing checked (stored sentinel has only bit
-      //               63 set, which is outside our kMaxOutputChannels
-      //               range, so this also gives "nothing checked"
-      //               naturally)
-      uint64_t displayMask = 0;
-      switch (row.intent) {
-         case Intent::Auto:
-            displayMask = ComputeAutoMaskForRow(static_cast<int>(rowIndex));
-            break;
-         case Intent::Explicit:
-            displayMask = row.originalStoredMask;
-            break;
-         case Intent::Silent:
-            displayMask = 0;
-            break;
-      }
-
       for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
          auto *check = new wxCheckBox(mMatrixPanel, wxID_ANY,
                                       wxEmptyString);
-         check->SetValue((displayMask & (uint64_t(1) << ch)) != 0);
-         const int capturedIndex = static_cast<int>(rowIndex);
-         check->Bind(wxEVT_CHECKBOX,
-            [this, capturedIndex](wxCommandEvent &) {
-               this->OnRowCheckboxToggled(capturedIndex);
-            });
+         check->SetValue(
+            row.originalStoredMask.test(static_cast<unsigned>(ch)));
          row.checks.push_back(check);
          grid->Add(check, 0, wxALIGN_CENTER, 0);
       }
@@ -249,9 +147,6 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
    mMatrixPanel->FitInside();
    outer->Add(mMatrixPanel, 1, wxEXPAND | wxALL, 6);
 
-   // Single action: Close applies pending changes and dismisses.
-   // The old Apply button was redundant -- it did the same thing as
-   // Close without closing, which gave no visible feedback.
    auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
    auto *closeBtn = new wxButton(this, wxID_CLOSE, _("&Close"));
    closeBtn->Bind(wxEVT_BUTTON, &PlaybackRoutingDialog::OnClose, this);
@@ -272,21 +167,18 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
 
 void PlaybackRoutingDialog::OnResetRow(int rowIndex)
 {
+   // Identity for this row: bits [rowIndex, rowIndex + channelCount)
+   // clamped to the device width.  Matches the default the
+   // PlaybackRoutingListener would have installed for a freshly added
+   // track at this position.
    if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= mRows.size())
       return;
    auto &row = mRows[rowIndex];
-   row.intent = Intent::Auto;
-   const auto autoMask = ComputeAutoMaskForRow(rowIndex);
-   CheckboxesFromMask(row.checks, autoMask);
-}
-
-void PlaybackRoutingDialog::OnRowCheckboxToggled(int rowIndex)
-{
-   if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= mRows.size())
-      return;
-   auto &row = mRows[rowIndex];
-   const auto mask = MaskFromCheckboxes(row.checks);
-   row.intent = (mask == 0) ? Intent::Silent : Intent::Explicit;
+   const auto channels = row.track ? row.track->NChannels() : size_t{0};
+   auto identity = PlaybackOutputMask::Identity(
+      static_cast<unsigned>(rowIndex), static_cast<unsigned>(channels));
+   // Don't show bits that are outside the device width.
+   CheckboxesFromMask(row.checks, identity, mNumOutputChannels);
 }
 
 int PlaybackRoutingDialog::ApplyIntents()
@@ -295,28 +187,22 @@ int PlaybackRoutingDialog::ApplyIntents()
    for (auto &row : mRows) {
       if (!row.track)
          continue;
-      uint64_t newStored = 0;
-      switch (row.intent) {
-         case Intent::Auto:
-            newStored = 0;
-            break;
-         case Intent::Silent:
-            newStored = kPlaybackRoutingSilentSentinel;
-            break;
-         case Intent::Explicit:
-            // Recompute from live checkbox state (user may have been
-            // clicking up to the moment of Close).
-            newStored = MaskFromCheckboxes(row.checks);
-            if (newStored == 0) {
-               // Empty row while Intent says Explicit would be a
-               // stale state after rapid user input; treat as Silent.
-               newStored = kPlaybackRoutingSilentSentinel;
-            }
-            break;
-      }
-      if (newStored != row.originalStoredMask) {
-         row.track->SetPlaybackOutputMask(newStored);
-         row.originalStoredMask = newStored;
+      // Preserve any bits set above the device width (the user cannot
+      // see or toggle those, but their routing is still valid if the
+      // device later widens).
+      auto newMask = row.originalStoredMask;
+      // Clear bits within the visible range, then set from checkboxes.
+      for (size_t ch = 0; ch < mNumOutputChannels &&
+                           ch < kMaxDisplayChannels; ++ch)
+         newMask.clear(static_cast<unsigned>(ch));
+      const auto visibleMask =
+         MaskFromCheckboxes(row.checks, mNumOutputChannels);
+      newMask.lo |= visibleMask.lo;
+      newMask.hi |= visibleMask.hi;
+
+      if (newMask != row.originalStoredMask) {
+         row.track->SetPlaybackOutputMask(newMask);
+         row.originalStoredMask = newMask;
          ++changed;
       }
    }
