@@ -18,7 +18,6 @@
 
 #include <catch2/catch.hpp>
 
-#include <cstdint>
 #include <memory>
 
 namespace
@@ -26,65 +25,57 @@ namespace
 constexpr int kSampleRate = 44100;
 constexpr size_t kNumChannels = 1;
 
-//! Build a StretchingSequence wrapping a mock, with a harmless factory so
-//! the constructor is happy. Tests focus exclusively on the mask delegation.
-//! Returned as a unique_ptr because StretchingSequence holds reference and
-//! const-unique_ptr members that preclude copy/move.
 std::unique_ptr<StretchingSequence>
 MakeSut(const MockPlayableSequence& mock)
 {
    return std::make_unique<StretchingSequence>(
       mock, kSampleRate, kNumChannels,
-      std::unique_ptr<AudioSegmentFactoryInterface>(new MockAudioSegmentFactory));
+      std::unique_ptr<AudioSegmentFactoryInterface>(
+         new MockAudioSegmentFactory));
 }
 } // namespace
 
 TEST_CASE(
-   "StretchingSequence forwards a non-zero playback output mask",
+   "StretchingSequence forwards a non-empty playback output mask",
    "[StretchingSequence][OutputMask]")
 {
-   // This is the exact bug that regressed: the wrapped track had a mask set
-   // via the Playback Routing dialog, but the StretchingSequence decorator
-   // did not override GetPlaybackOutputMask() and returned the
-   // PlayableSequence base-class default of 0, hiding the mask from AudioIO.
    MockPlayableSequence mock(kSampleRate, kNumChannels);
-   mock.playbackOutputMask = 0xDEADBEEFull;
+   mock.playbackOutputMask = { 0xDEADBEEFull, 0 };
 
    const auto sut = MakeSut(mock);
-   REQUIRE(sut->GetPlaybackOutputMask() == 0xDEADBEEFull);
+   REQUIRE(sut->GetPlaybackOutputMask() ==
+      PlaybackOutputMask{ 0xDEADBEEFull, 0 });
 }
 
 TEST_CASE(
-   "StretchingSequence forwards the default (zero) mask",
+   "StretchingSequence forwards the default (empty) mask",
    "[StretchingSequence][OutputMask]")
 {
-   // Sanity: if the wrapped sequence has no mask, the decorator must also
-   // report 0 -- not some stale or uninitialized value.
    MockPlayableSequence mock(kSampleRate, kNumChannels);
-   REQUIRE(mock.playbackOutputMask == 0);
+   REQUIRE(mock.playbackOutputMask.empty());
 
    const auto sut = MakeSut(mock);
-   REQUIRE(sut->GetPlaybackOutputMask() == 0);
+   REQUIRE(sut->GetPlaybackOutputMask().empty());
 }
 
 TEST_CASE(
    "StretchingSequence reflects live mask changes on the wrapped sequence",
    "[StretchingSequence][OutputMask]")
 {
-   // Verifies the decorator forwards *live* -- it does not cache the mask
-   // at construction time. The user can change the mask via the UI after
-   // playback prep has wrapped the track.
    MockPlayableSequence mock(kSampleRate, kNumChannels);
    const auto sut = MakeSut(mock);
 
-   REQUIRE(sut->GetPlaybackOutputMask() == 0);
+   REQUIRE(sut->GetPlaybackOutputMask().empty());
 
-   mock.playbackOutputMask = 0x5;
-   REQUIRE(sut->GetPlaybackOutputMask() == 0x5);
+   mock.playbackOutputMask = { 0x5, 0 };
+   REQUIRE(sut->GetPlaybackOutputMask() == PlaybackOutputMask{ 0x5, 0 });
 
-   mock.playbackOutputMask = 1ull << 40;
-   REQUIRE(sut->GetPlaybackOutputMask() == (1ull << 40));
+   // Cross-boundary bits: bit 64 lives in the high word.
+   mock.playbackOutputMask = {};
+   mock.playbackOutputMask.set(64);
+   REQUIRE(sut->GetPlaybackOutputMask().test(64));
+   REQUIRE_FALSE(sut->GetPlaybackOutputMask().test(63));
 
-   mock.playbackOutputMask = 0;
-   REQUIRE(sut->GetPlaybackOutputMask() == 0);
+   mock.playbackOutputMask = {};
+   REQUIRE(sut->GetPlaybackOutputMask().empty());
 }

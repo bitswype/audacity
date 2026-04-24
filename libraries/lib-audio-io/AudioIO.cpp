@@ -1326,22 +1326,18 @@ bool AudioIO::AllocateBuffers(
                [=]{ return std::make_unique<RingBuffer>(floatSample, playbackBufferSize); }
             );
 
-            // Compute per-track output channel assignments.  We collect
-            // channel counts and per-track masks (0 for tracks with no
-            // explicit routing) and let ChannelRouting decide the rest.
+            // Snapshot per-track output masks.  Every track has an
+            // explicit mask; empty mask means the track is silent.
             {
-               std::vector<size_t> trackChannelCounts;
-               std::vector<uint64_t> trackOutputMasks;
-               trackChannelCounts.reserve(mPlaybackSequences.size());
+               std::vector<PlaybackOutputMask> trackOutputMasks;
                trackOutputMasks.reserve(mPlaybackSequences.size());
                for (const auto& seq : mPlaybackSequences) {
-                  trackChannelCounts.push_back(seq ? seq->NChannels() : 0);
                   trackOutputMasks.push_back(
-                     seq ? seq->GetPlaybackOutputMask() : 0);
+                     seq ? seq->GetPlaybackOutputMask()
+                         : PlaybackOutputMask{});
                }
-               mChannelAssignments = ComputeChannelAssignments(
-                  trackChannelCounts, trackOutputMasks,
-                  mNumPlaybackChannels);
+               mChannelAssignments =
+                  ComputeChannelAssignments(trackOutputMasks);
             }
 
             mPlaybackMixers.clear();

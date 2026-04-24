@@ -9,23 +9,16 @@
   the real WaveTrack, real StretchingSequence, real
   ComputeChannelAssignments, and real RouteTrackSamples.
 
-  Motivation: the unit tests for each piece (ChannelRouting,
-  StretchingSequence mask forwarding, RouteTrackSamples) all passed,
-  but field testing showed the feature still not working.  The gap
-  between the unit tests and reality was the composition: a mask set
-  on a WaveTrack has to survive every layer of the real pipeline.
-  Individual layer tests don't catch it when a layer silently drops
-  the value.
-
-  This file simulates what AudioIO::StartStream and
-  ProcessPlaybackSlices do, without going through PortAudio.
+  The individual layer tests cover their own behavior; this file
+  proves the layers compose correctly across the static-mask refactor.
 
 **********************************************************************/
 #include "MockSampleBlockFactory.h"
 #include "TestWaveClipMaker.h"
 #include "TestWaveTrackMaker.h"
 
-#include "ChannelRouting.h" // also provides kPlaybackRoutingSilentSentinel
+#include "ChannelRouting.h"
+#include "PlaybackOutputMask.h"
 #include "RouteTrackSamples.h"
 #include "StretchingSequence.h"
 #include "WaveTrack.h"
@@ -33,7 +26,6 @@
 #include <catch2/catch.hpp>
 
 #include <array>
-#include <cstdint>
 #include <memory>
 #include <vector>
 
@@ -41,30 +33,18 @@ namespace
 {
 constexpr int kSampleRate = 44100;
 
-//! Build a playback pipeline state equivalent to what AudioIO would
-//! hold after StartStream, then run one track's samples through
-//! ComputeChannelAssignments + RouteTrackSamples.
 struct PipelineRunner
 {
-   //! Per-track input: source samples (one vector per source channel)
-   //! and an optional mask set on the track.  If @c mask is 0, the
-   //! track uses auto routing.
    struct TrackInput {
       std::shared_ptr<WaveTrack> track;
       std::vector<std::vector<float>> sourceSamples;
-      uint64_t mask = 0;
+      PlaybackOutputMask mask{};
    };
 
-   //! Run the whole pipeline and return the resulting master buffers
-   //! (one vector per output channel).  @c samplesPerTrack must match
-   //! the length of each sourceSamples[] entry.
    static std::vector<std::vector<float>>
    Run(std::vector<TrackInput>& inputs, size_t numOutputChannels,
        size_t samplesPerTrack)
    {
-      // 1. Apply each mask to its track, then wrap in the real
-      //    StretchingSequence decorator just like
-      //    TransportUtilities::MakeTransportTracks does.
       std::vector<std::shared_ptr<StretchingSequence>> sequences;
       sequences.reserve(inputs.size());
       for (auto& input : inputs) {
@@ -73,22 +53,15 @@ struct PipelineRunner
             *input.track, input.track->GetClipInterfaces()));
       }
 
-      // 2. Mirror AudioIO::StartStream: collect per-track channel
-      //    counts and masks, and compute assignments.
-      std::vector<size_t> channelCounts;
-      std::vector<uint64_t> masks;
-      channelCounts.reserve(sequences.size());
+      // Mirror AudioIO::StartStream: snapshot per-track masks and
+      // compute assignments.
+      std::vector<PlaybackOutputMask> masks;
       masks.reserve(sequences.size());
-      for (const auto& seq : sequences) {
-         channelCounts.push_back(seq->NChannels());
+      for (const auto& seq : sequences)
          masks.push_back(seq->GetPlaybackOutputMask());
-      }
-      const auto assignments = ComputeChannelAssignments(
-         channelCounts, masks, numOutputChannels);
+      const auto assignments = ComputeChannelAssignments(masks);
 
-      // 3. Mirror AudioIO::ProcessPlaybackSlices: set up master
-      //    buffers and per-track processing buffers, invoke the
-      //    real RouteTrackSamples.
+      // Mirror AudioIO::ProcessPlaybackSlices.
       std::vector<std::vector<float>> masterStorage(
          numOutputChannels, std::vector<float>(samplesPerTrack, 0.f));
       std::vector<float*> masterPtrs(numOutputChannels);
@@ -96,8 +69,6 @@ struct PipelineRunner
          masterPtrs[i] = masterStorage[i].data();
 
       for (size_t t = 0; t < inputs.size(); ++t) {
-         // Fresh processing buffers for each track (cases 2 and 3
-         // of RouteTrackSamples mutate them in place).
          auto procStorage = inputs[t].sourceSamples;
          std::vector<float*> procPtrs(procStorage.size());
          for (size_t c = 0; c < procStorage.size(); ++c)
@@ -118,11 +89,9 @@ struct PipelineRunner
    }
 };
 
-//! Bind a factory + makers with static-local storage so every TEST_CASE
-//! that uses them sees the same factory instance.  (Consistent with
-//! the existing tests in this directory.)
 struct Makers {
-   SampleBlockFactoryPtr factory { std::make_shared<MockSampleBlockFactory>() };
+   SampleBlockFactoryPtr factory {
+      std::make_shared<MockSampleBlockFactory>() };
    TestWaveClipMaker clipMaker { kSampleRate, factory };
    TestWaveTrackMaker trackMaker { kSampleRate, factory };
 };
@@ -133,14 +102,19 @@ Makers& MakersInstance()
    return m;
 }
 
-//! Build a mono WaveTrack whose single clip contains @c samples at the
-//! given constant value.  The track is ready to have a mask set on it.
 std::shared_ptr<WaveTrack>
 MakeMonoTrack(float value, size_t samples)
 {
    auto& m = MakersInstance();
    auto clip = m.clipMaker.ClipFilledWith(value, samples, 1);
    return m.trackMaker.Track(clip);
+}
+
+PlaybackOutputMask BitMask(unsigned bit)
+{
+   PlaybackOutputMask m;
+   m.set(bit);
+   return m;
 }
 
 } // namespace
@@ -151,10 +125,7 @@ TEST_CASE(
 {
    // Regression for the field-visible bug: a mask set on a WaveTrack
    // was being dropped by StretchingSequence's missing
-   // GetPlaybackOutputMask override.  This test fails if any layer of
-   // the real pipeline (track storage, decorator forwarding,
-   // assignment computation, sample distribution) silently drops the
-   // mask.
+   // GetPlaybackOutputMask override.
    const size_t samples = 64;
    const float value = 1.f;
 
@@ -162,10 +133,10 @@ TEST_CASE(
    inputs.push_back({
       MakeMonoTrack(value, samples),
       { std::vector<float>(samples, value) },
-      0b0001, // only output 0
+      BitMask(0),
    });
 
-   const auto master = PipelineRunner::Run(inputs, /*numOutputChannels=*/4, samples);
+   const auto master = PipelineRunner::Run(inputs, 4, samples);
 
    REQUIRE(master[0][0] == Catch::Detail::Approx(value));
    REQUIRE(master[1][0] == 0.f);
@@ -174,13 +145,12 @@ TEST_CASE(
 }
 
 TEST_CASE(
-   "Pipeline: four mono tracks masked to output 0 all sum into channel 0",
+   "Pipeline: four mono tracks masked to output 0 sum into channel 0",
    "[Integration][Routing]")
 {
-   // Exactly the scenario Chris reported: four mono tracks each
-   // masked to the left channel only.  On a stereo device
-   // (numOutputChannels == 2) all four tracks must land in master[0],
-   // and master[1] must stay silent.
+   // Exactly the scenario Chris reported from hardware: four mono
+   // tracks each masked to the left channel only.  All four tracks
+   // land in master[0], master[1] stays silent.
    const size_t samples = 32;
 
    std::vector<PipelineRunner::TrackInput> inputs;
@@ -189,66 +159,64 @@ TEST_CASE(
       inputs.push_back({
          MakeMonoTrack(v, samples),
          { std::vector<float>(samples, v) },
-         0b0001,
+         BitMask(0),
       });
 
-   const auto master = PipelineRunner::Run(inputs, /*numOutputChannels=*/2, samples);
+   const auto master = PipelineRunner::Run(inputs, 2, samples);
 
-   // Master 0 = 1 + 2 + 3 + 4 = 10
    REQUIRE(master[0][0] == Catch::Detail::Approx(10.f));
-   // Master 1 must be silent: the failing behavior was master[1]
-   // receiving audio when the user masked tracks to left-only.
    REQUIRE(master[1][0] == 0.f);
 }
 
 TEST_CASE(
-   "Pipeline: mask 0 keeps legacy auto-routing behavior intact",
+   "Pipeline: empty mask silences the track end-to-end",
    "[Integration][Routing]")
 {
-   // Two mono tracks, no masks, stereo device.  The pre-routing-matrix
-   // behavior is "mono tracks duplicate to every output channel".
-   // This guards against the new mask plumbing accidentally changing
-   // the default behavior.
+   // Empty mask means silent in the static-mask model.  A track with
+   // no bits set must produce no audio anywhere, while neighboring
+   // tracks route normally.
    const size_t samples = 16;
 
    std::vector<PipelineRunner::TrackInput> inputs;
    inputs.push_back({
       MakeMonoTrack(1.f, samples),
       { std::vector<float>(samples, 1.f) },
-      0,
+      {}, // empty mask -> silent
    });
+   PlaybackOutputMask bothBits;
+   bothBits.set(0);
+   bothBits.set(1);
    inputs.push_back({
-      MakeMonoTrack(2.f, samples),
-      { std::vector<float>(samples, 2.f) },
-      0,
+      MakeMonoTrack(4.f, samples),
+      { std::vector<float>(samples, 4.f) },
+      bothBits,
    });
 
-   const auto master = PipelineRunner::Run(inputs, /*numOutputChannels=*/2, samples);
+   const auto master = PipelineRunner::Run(inputs, 2, samples);
 
-   // Each track duplicates to both outputs; masters are the sum.
-   REQUIRE(master[0][0] == Catch::Detail::Approx(3.f));
-   REQUIRE(master[1][0] == Catch::Detail::Approx(3.f));
+   // Only the non-empty track contributes; the silent track is gone.
+   REQUIRE(master[0][0] == Catch::Detail::Approx(4.f));
+   REQUIRE(master[1][0] == Catch::Detail::Approx(4.f));
 }
 
 TEST_CASE(
-   "Pipeline: mask routes track N to output M on a 16-channel device",
+   "Pipeline: mask routes 16 mono tracks across a 16-channel device",
    "[Integration][Routing]")
 {
    // Shaker-style test: 16 mono tracks, each masked to a distinct
-   // output channel in an arbitrary permutation, on a 16-output
-   // device.  Each output must receive exactly one track.
+   // output channel in an arbitrary permutation.  Each output
+   // receives exactly one track.
    const size_t samples = 8;
    constexpr size_t numOut = 16;
 
-   // Permutation: track i routes to output (15 - i)
    std::vector<PipelineRunner::TrackInput> inputs;
    for (size_t i = 0; i < numOut; ++i) {
       const float v = static_cast<float>(i + 1);
-      const size_t outCh = numOut - 1 - i;
+      const unsigned outCh = static_cast<unsigned>(numOut - 1 - i);
       inputs.push_back({
          MakeMonoTrack(v, samples),
          { std::vector<float>(samples, v) },
-         uint64_t(1) << outCh,
+         BitMask(outCh),
       });
    }
 
@@ -262,57 +230,46 @@ TEST_CASE(
 }
 
 TEST_CASE(
-   "Pipeline: explicit-silent sentinel silences a track end-to-end",
-   "[Integration][Routing]")
-{
-   // Simulates the dialog's "user unchecked every box on this row"
-   // case.  A track with mask = kPlaybackRoutingSilentSentinel must
-   // produce no audio anywhere, while neighboring tracks route
-   // normally.  Distinct from mask = 0 (auto), which on a stereo
-   // device duplicates mono across both outputs.
-   const size_t samples = 16;
-
-   std::vector<PipelineRunner::TrackInput> inputs;
-   inputs.push_back({
-      MakeMonoTrack(1.f, samples),
-      { std::vector<float>(samples, 1.f) },
-      kPlaybackRoutingSilentSentinel, // silenced
-   });
-   inputs.push_back({
-      MakeMonoTrack(4.f, samples),
-      { std::vector<float>(samples, 4.f) },
-      0, // auto -> duplicates to both outputs on a stereo device
-   });
-
-   const auto master = PipelineRunner::Run(inputs, /*numOutputChannels=*/2, samples);
-
-   // Only the auto track contributes; silenced track is gone.
-   REQUIRE(master[0][0] == Catch::Detail::Approx(4.f));
-   REQUIRE(master[1][0] == Catch::Detail::Approx(4.f));
-}
-
-TEST_CASE(
    "Pipeline: changing a mask after wrapping is observed by playback",
    "[Integration][Routing]")
 {
    // StretchingSequence wraps the WaveTrack by reference.  Changing
-   // the mask on the track after wrapping MUST be visible to the
-   // next playback callback.  This is the dialog-apply workflow:
-   // user edits masks, then presses Play without recreating the
-   // sequences.  (In practice StartStream rebuilds sequences, but
-   // the decorator must still not cache.)
+   // the mask on the track after wrapping must be visible to the
+   // next playback callback.
    const size_t samples = 16;
    auto track = MakeMonoTrack(1.f, samples);
-   track->SetPlaybackOutputMask(0b0001);
+   track->SetPlaybackOutputMask(BitMask(0));
 
-   auto seq = StretchingSequence::Create(*track, track->GetClipInterfaces());
-   REQUIRE(seq->GetPlaybackOutputMask() == 0b0001);
+   auto seq = StretchingSequence::Create(
+      *track, track->GetClipInterfaces());
+   REQUIRE(seq->GetPlaybackOutputMask() == BitMask(0));
 
-   // User opens the dialog and re-routes to output 1.
-   track->SetPlaybackOutputMask(0b0010);
-   REQUIRE(seq->GetPlaybackOutputMask() == 0b0010);
+   track->SetPlaybackOutputMask(BitMask(1));
+   REQUIRE(seq->GetPlaybackOutputMask() == BitMask(1));
 
-   // User clears routing.
-   track->SetPlaybackOutputMask(0);
-   REQUIRE(seq->GetPlaybackOutputMask() == 0);
+   track->SetPlaybackOutputMask({});
+   REQUIRE(seq->GetPlaybackOutputMask().empty());
+}
+
+TEST_CASE(
+   "Pipeline: mask on a high-word bit (above 64) routes correctly",
+   "[Integration][Routing]")
+{
+   // Covers the 128-bit widening: bit 70 on a 128-output device must
+   // reach master[70].
+   const size_t samples = 8;
+
+   std::vector<PipelineRunner::TrackInput> inputs;
+   inputs.push_back({
+      MakeMonoTrack(3.f, samples),
+      { std::vector<float>(samples, 3.f) },
+      BitMask(70),
+   });
+
+   const auto master = PipelineRunner::Run(inputs, 128, samples);
+
+   REQUIRE(master[63][0] == 0.f);
+   REQUIRE(master[69][0] == 0.f);
+   REQUIRE(master[70][0] == Catch::Detail::Approx(3.f));
+   REQUIRE(master[71][0] == 0.f);
 }

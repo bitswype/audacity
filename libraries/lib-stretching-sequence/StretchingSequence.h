@@ -58,7 +58,7 @@ public:
    //! Delegates to the wrapped WaveTrack so per-track playback
    //! routing masks (from the Playback Routing dialog) flow through
    //! the StretchingSequence wrapper to AudioIO.
-   uint64_t GetPlaybackOutputMask() const override;
+   PlaybackOutputMask GetPlaybackOutputMask() const override;
 
    // AudioGraph::Channel
    AudioGraph::ChannelType GetChannelType() const override;

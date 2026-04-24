@@ -113,7 +113,7 @@ bool StretchingSequence::GetMute() const
    return mSequence.GetMute();
 }
 
-uint64_t StretchingSequence::GetPlaybackOutputMask() const
+PlaybackOutputMask StretchingSequence::GetPlaybackOutputMask() const
 {
    return mSequence.GetPlaybackOutputMask();
 }

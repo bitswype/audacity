@@ -321,15 +321,25 @@ public:
    float GetPan() const;
    void SetPan(float newPan);
 
-   //! Bitmask of device output channels this track routes to during
-   //! multi-channel playback. Bit N set means "play on output channel N".
-   //! A value of 0 means "use default identity routing" (no explicit
-   //! user assignment) -- this is the value used for all tracks until
-   //! the user opens the Playback Routing dialog and sets something.
-   //! Also overrides PlayableSequence::GetPlaybackOutputMask so that
-   //! AudioIO can consume the mask without downcasting.
-   uint64_t GetPlaybackOutputMask() const override;
-   void SetPlaybackOutputMask(uint64_t mask);
+   //! 128-bit mask of device output channels this track routes to.
+   //! Bit N set means "play on output channel N".  Empty mask = silent.
+   //! There is no "auto routing" runtime state -- the mask is set
+   //! explicitly at track creation (identity bits by default) and
+   //! changed from there.  See PlaybackOutputMask.h.
+   //! Overrides PlayableSequence::GetPlaybackOutputMask so AudioIO
+   //! can consume the mask without downcasting.
+   PlaybackOutputMask GetPlaybackOutputMask() const override;
+   void SetPlaybackOutputMask(PlaybackOutputMask mask);
+
+   //! True iff this track was loaded from XML that carried any
+   //! outputmask* attribute (new lo/hi or legacy single).  Tracks
+   //! created in-app default true (the PlaybackRoutingListener sets
+   //! up their identity immediately).  The load-time migration uses
+   //! this flag to decide whether a track's empty mask means "user
+   //! chose silent" (seen=true) or "upstream project without routing
+   //! metadata" (seen=false, synthesize identity).
+   bool GetOutputMaskAttrSeen() const;
+   void SetOutputMaskAttrSeen(bool seen);
 
    //! Takes volume and pan into account
    float GetChannelVolume(int channel) const override;

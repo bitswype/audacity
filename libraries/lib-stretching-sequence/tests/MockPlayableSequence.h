@@ -25,9 +25,9 @@ public:
 
    //! Mutable so tests can change it post-construction and verify that
    //! decorators forward the value live (not cached at wrap time).
-   uint64_t playbackOutputMask = 0;
+   PlaybackOutputMask playbackOutputMask{};
 
-   uint64_t GetPlaybackOutputMask() const override
+   PlaybackOutputMask GetPlaybackOutputMask() const override
    {
       return playbackOutputMask;
    }

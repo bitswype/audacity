@@ -10,6 +10,39 @@
 #include <algorithm>
 #include <cstdint>
 
+namespace
+{
+//! Call @p visit(bit) for each set bit in the mask in low-to-high bit
+//! order (0..63 from lo, then 64..127 from hi), stopping at bits that
+//! would be out of range for the current device.
+template <typename F>
+void ForEachSetBitInRange(
+   const PlaybackOutputMask& mask, size_t numOutputChannels, F&& visit)
+{
+   const unsigned cap = static_cast<unsigned>(
+      std::min<size_t>(numOutputChannels, kPlaybackOutputMaskBits));
+   // Low word: bits 0..63
+   uint64_t w = mask.lo;
+   while (w != 0) {
+      const unsigned b = static_cast<unsigned>(__builtin_ctzll(w));
+      if (b >= cap)
+         return;
+      visit(b);
+      w &= w - 1; // clear lowest set bit
+   }
+   // High word: bits 64..127
+   w = mask.hi;
+   while (w != 0) {
+      const unsigned b =
+         64u + static_cast<unsigned>(__builtin_ctzll(w));
+      if (b >= cap)
+         return;
+      visit(b);
+      w &= w - 1;
+   }
+}
+} // namespace
+
 void RouteTrackSamples(
    const TrackChannelAssignment& assignment,
    size_t numSourceChannels,
@@ -19,64 +52,37 @@ void RouteTrackSamples(
    float* const* processingBuffers,
    float* const* masterBuffers)
 {
-   const uint64_t outputMask = assignment.outputMask;
-   const int assignedOutput = assignment.outputChannel;
-   const size_t numChannels = numSourceChannels;
+   const auto& mask = assignment.outputMask;
 
-   if (outputMask != 0) {
-      // Case 1: mask-driven routing.
-      unsigned srcChannel = 0;
-      for (unsigned outCh = 0; outCh < numOutputChannels; ++outCh) {
-         if (!(outputMask & (uint64_t(1) << outCh)))
-            continue;
-         const unsigned srcToUse = (numChannels > 1)
-            ? std::min<unsigned>(srcChannel,
-               static_cast<unsigned>(numChannels) - 1u)
-            : 0u;
-         const float volume = getChannelVolume(static_cast<int>(srcToUse));
-         for (size_t i = 0; i < samplesAvailable; ++i)
-            masterBuffers[outCh][i] +=
-               processingBuffers[srcToUse][i] * volume;
-         if (numChannels > 1)
-            ++srcChannel;
-      }
-   } else if (assignedOutput >= 0 && numChannels > 1) {
-      // Case 2: multi-channel with assigned output (identity).
-      const auto startCh = static_cast<unsigned>(assignedOutput);
-      const auto cnt = std::min(
-         numChannels,
-         static_cast<size_t>(numOutputChannels - startCh));
-      for (unsigned n = 0; n < cnt; ++n) {
-         const float volume = getChannelVolume(static_cast<int>(n));
-         for (size_t i = 0; i < samplesAvailable; ++i) {
-            processingBuffers[n][i] *= volume;
-            masterBuffers[startCh + n][i] += processingBuffers[n][i];
-         }
-      }
-   } else if (numChannels > 1 && assignedOutput < 0) {
-      // Case 3: multi-channel, legacy routing.
-      const auto cnt = std::min(numChannels, numOutputChannels);
-      for (unsigned n = 0; n < cnt; ++n) {
-         const float volume = getChannelVolume(static_cast<int>(n));
-         for (size_t i = 0; i < samplesAvailable; ++i) {
-            processingBuffers[n][i] *= volume;
-            masterBuffers[n][i] += processingBuffers[n][i];
-         }
-      }
-   } else if (numChannels == 1 && assignedOutput >= 0) {
-      // Case 4: mono with assigned output.
-      const auto targetChannel = static_cast<unsigned>(assignedOutput);
+   // Case 1: empty mask -> silent.
+   if (mask.empty())
+      return;
+
+   if (numSourceChannels == 1) {
+      // Case 2: mono source replicates into every set bit in range.
       const float volume = getChannelVolume(0);
-      for (size_t i = 0; i < samplesAvailable; ++i)
-         masterBuffers[targetChannel][i] +=
-            processingBuffers[0][i] * volume;
-   } else if (numChannels == 1) {
-      // Case 5: mono, legacy stereo (duplicate to all outputs).
-      for (unsigned n = 0; n < numOutputChannels; ++n) {
-         const float volume = getChannelVolume(static_cast<int>(n));
-         for (size_t i = 0; i < samplesAvailable; ++i)
-            masterBuffers[n][i] +=
-               processingBuffers[0][i] * volume;
-      }
+      ForEachSetBitInRange(mask, numOutputChannels,
+         [&](unsigned outCh) {
+            for (size_t i = 0; i < samplesAvailable; ++i)
+               masterBuffers[outCh][i] +=
+                  processingBuffers[0][i] * volume;
+         });
+      return;
    }
+
+   // Case 3: multi-channel source walks set bits sequentially.  Each
+   // source channel pairs with the next set bit; extras are dropped.
+   unsigned srcChannel = 0;
+   ForEachSetBitInRange(mask, numOutputChannels,
+      [&](unsigned outCh) {
+         if (srcChannel >= numSourceChannels)
+            return; // out of source channels; remaining bits get nothing
+         const float volume =
+            getChannelVolume(static_cast<int>(srcChannel));
+         for (size_t i = 0; i < samplesAvailable; ++i) {
+            processingBuffers[srcChannel][i] *= volume;
+            masterBuffers[outCh][i] += processingBuffers[srcChannel][i];
+         }
+         ++srcChannel;
+      });
 }

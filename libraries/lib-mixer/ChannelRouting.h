@@ -8,72 +8,41 @@
   Separates the routing decision from the AudioIO playback loop so it
   can be tested independently.
 
+  As of the 128-bit static-mask refactor, every playback track carries
+  an explicit PlaybackOutputMask.  Empty mask = silent.  There is no
+  more "auto routing" state, and no sentinel bit -- the mask either
+  has bits or it does not.  See
+  .claude/plans/playback-routing-128bit-static-masks.md.
+
 *******************************************************************/
 #pragma once
 
 #include "MixerOptions.h" // for MIXER_API
+#include "PlaybackOutputMask.h"
 
 #include <cstddef>
-#include <cstdint>
 #include <vector>
 
-//! Sentinel mask value meaning "this track is explicitly silenced"
-//! (no playback on any output).  Distinct from @c outputMask == 0,
-//! which means "fall back to auto routing".
-//!
-//! Implemented by setting bit 63, which is out of range for every
-//! realistic playback device (PortAudio, CoreAudio, WASAPI and ALSA
-//! each impose channel caps well below 64).  The routing loop in
-//! @c RouteTrackSamples iterates output channels from 0 to
-//! @c numOutputChannels, so bit 63 is never inspected and the track
-//! produces no output.  Callers that build checkbox UIs on top of
-//! this mask MUST leave bit 63 alone -- cap the user-visible
-//! channels at 63 to keep the sentinel unambiguous.
-constexpr uint64_t kPlaybackRoutingSilentSentinel = uint64_t(1) << 63;
-
-//! Per-track output channel assignment for multi-channel playback.
-//!
-//! Two ways a track can be routed:
-//! - @c outputMask != 0: explicit bitmask, bit N = play on output N
-//!   (set by the user via the Playback Routing dialog). Takes priority.
-//! - @c outputMask == 0: fall back to @c outputChannel. -1 means
-//!   "legacy stereo behavior" (mono duplication across all outputs);
-//!   >=0 means "identity routing starting at this output channel".
+//! Per-track output channel assignment.  In the static-mask model this
+//! is a thin wrapper around the mask -- kept as a struct for forward
+//! compatibility (future fields might carry per-track gain, etc).
 struct TrackChannelAssignment
 {
-   //! First output channel this track routes to when @c outputMask is 0.
-   //! For mono tracks: the single output channel.
-   //! For multi-channel tracks: the starting channel (identity mapping).
-   //! -1 = legacy stereo behavior (duplicate mono to all outputs).
-   int outputChannel = -1;
-
-   //! Bitmask of output channels to route to. Bit N = use output N.
-   //! 0 = unset; fall back to @c outputChannel.
-   //! For multi-channel source tracks, set bits are consumed
-   //! sequentially: source channel 0 goes to the lowest set bit,
-   //! source channel 1 to the next set bit, etc.
-   uint64_t outputMask = 0;
+   //! 128-bit bitmask of output channels to route to.  Empty = silent.
+   //! For multi-channel source tracks, source channels walk the set
+   //! bits in low-to-high bit order (all of lo, then all of hi).
+   PlaybackOutputMask outputMask{};
 };
 
-//! Compute output channel assignments for a set of playback tracks.
+//! Snapshot per-track output mask assignments for a set of playback
+//! tracks.  Essentially a 1:1 copy from @p trackOutputMasks, existing
+//! as a function so callers have a single place to reason about
+//! routing and so the function can evolve if the assignment model
+//! grows more fields.
 //!
-//! @param trackChannelCounts NChannels() for each track in playback order
-//! @param trackOutputMasks   Explicit per-track output masks (bitmask of
-//!                           output channels). Same size as
-//!                           trackChannelCounts. Value 0 means the track
-//!                           has no explicit routing, so identity rules
-//!                           below apply.
-//! @param numOutputChannels  Number of output channels on the device
-//! @return Per-track assignments, same size as trackChannelCounts
-//!
-//! Rules (applied only to tracks whose outputMask is 0; tracks with a
-//! non-zero mask pass through unchanged):
-//! - If numOutputChannels <= 2: all tracks get assignment -1 (legacy stereo)
-//! - If numOutputChannels > 2 and a mono track's position maps to a valid
-//!   output channel: identity routing (track index -> output channel)
-//! - Multi-channel tracks (NChannels > 1): identity from their buffer offset
-//! - Tracks beyond the output channel count: legacy behavior (-1)
+//! @param trackOutputMasks Per-track masks (same order as the
+//!                         playback sequence list).  Each mask is
+//!                         used verbatim.
+//! @return Per-track assignments, same length as @p trackOutputMasks.
 MIXER_API std::vector<TrackChannelAssignment> ComputeChannelAssignments(
-   const std::vector<size_t>& trackChannelCounts,
-   const std::vector<uint64_t>& trackOutputMasks,
-   size_t numOutputChannels);
+   const std::vector<PlaybackOutputMask>& trackOutputMasks);

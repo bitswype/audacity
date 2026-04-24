@@ -231,8 +231,18 @@ struct WaveTrackData : ClientData::Cloneable<> {
    int GetRate() const;
    void SetRate(int value);
 
-   uint64_t GetPlaybackOutputMask() const;
-   void SetPlaybackOutputMask(uint64_t mask);
+   PlaybackOutputMask GetPlaybackOutputMask() const;
+   void SetPlaybackOutputMask(PlaybackOutputMask mask);
+
+   //! True iff the track was loaded from XML that included any
+   //! outputmask* attribute (new or legacy).  Used by the post-load
+   //! migration to tell tracks whose empty mask means "user chose
+   //! silent" from upstream-project tracks whose empty mask means
+   //! "no routing yet -- synthesize identity".
+   //! Default true for tracks created in-app (they get identity
+   //! installed by the TrackList hook, not by migration).
+   bool GetOutputMaskAttrSeen() const { return mOutputMaskAttrSeen; }
+   void SetOutputMaskAttrSeen(bool seen) { mOutputMaskAttrSeen = seen; }
 
 private:
    //! Atomic because it may be read by worker threads in playback
@@ -240,12 +250,22 @@ private:
    //! Atomic because it may be read by worker threads in playback
    std::atomic<float> mPan{ 0.0f };
 
-   //! Bitmask of device output channels this track routes to during
-   //! playback. Bit N set == send the track's audio to output channel N.
-   //! Value 0 means "use default identity routing from
-   //! ComputeChannelAssignments" (no user override).
-   //! Atomic because read by the audio worker thread during playback.
-   std::atomic<uint64_t> mPlaybackOutputMask{ 0 };
+   //! 128-bit mask of device output channels this track routes to.
+   //! Bit N set == send the track's audio to output channel N.
+   //! Empty mask (both words zero) == track is silent.
+   //! Split across two atomics because std::atomic<__int128> is not
+   //! portable; reads and writes of the pair are NOT atomic together.
+   //! This is acceptable because the mask is only sampled at
+   //! StartStream (snapshotted into a vector), not on the audio hot
+   //! path, so a torn read at worst means one playback session sees a
+   //! half-updated mask.  See the design note in
+   //! .claude/plans/playback-routing-128bit-static-masks.md.
+   std::atomic<uint64_t> mPlaybackOutputMaskLo{ 0 };
+   std::atomic<uint64_t> mPlaybackOutputMaskHi{ 0 };
+   //! See GetOutputMaskAttrSeen().  Defaults true: tracks created
+   //! in-app don't need migration.  XML load clears this, then any
+   //! outputmask* attr encountered sets it back.
+   bool mOutputMaskAttrSeen{ true };
 
    int mRate{ 44100 };
    double mOrigin{ 0.0 };
@@ -330,14 +350,18 @@ void WaveTrackData::SetRate(int value)
    mRate = value;
 }
 
-uint64_t WaveTrackData::GetPlaybackOutputMask() const
+PlaybackOutputMask WaveTrackData::GetPlaybackOutputMask() const
 {
-   return mPlaybackOutputMask.load(std::memory_order_relaxed);
+   PlaybackOutputMask m;
+   m.lo = mPlaybackOutputMaskLo.load(std::memory_order_relaxed);
+   m.hi = mPlaybackOutputMaskHi.load(std::memory_order_relaxed);
+   return m;
 }
 
-void WaveTrackData::SetPlaybackOutputMask(uint64_t mask)
+void WaveTrackData::SetPlaybackOutputMask(PlaybackOutputMask mask)
 {
-   mPlaybackOutputMask.store(mask, std::memory_order_relaxed);
+   mPlaybackOutputMaskLo.store(mask.lo, std::memory_order_relaxed);
+   mPlaybackOutputMaskHi.store(mask.hi, std::memory_order_relaxed);
 }
 
 namespace {
@@ -916,17 +940,27 @@ void WaveTrack::SetPan(float newPan)
    }
 }
 
-uint64_t WaveTrack::GetPlaybackOutputMask() const
+PlaybackOutputMask WaveTrack::GetPlaybackOutputMask() const
 {
    return WaveTrackData::Get(*this).GetPlaybackOutputMask();
 }
 
-void WaveTrack::SetPlaybackOutputMask(uint64_t mask)
+void WaveTrack::SetPlaybackOutputMask(PlaybackOutputMask mask)
 {
    if (GetPlaybackOutputMask() != mask) {
       WaveTrackData::Get(*this).SetPlaybackOutputMask(mask);
       Notify(true);
    }
+}
+
+bool WaveTrack::GetOutputMaskAttrSeen() const
+{
+   return WaveTrackData::Get(*this).GetOutputMaskAttrSeen();
+}
+
+void WaveTrack::SetOutputMaskAttrSeen(bool seen)
+{
+   WaveTrackData::Get(*this).SetOutputMaskAttrSeen(seen);
 }
 
 float WaveChannel::GetChannelVolume(int channel) const
@@ -2483,17 +2517,29 @@ static constexpr auto Linked_attr = "linked";
 static constexpr auto NChannels_attr = "nchannels";
 static constexpr auto SampleFormat_attr = "sampleformat";
 static constexpr auto Channel_attr = "channel"; // write-only!
-//! bitswype fork: per-track playback output routing mask (see
-//! WaveTrack::GetPlaybackOutputMask).  Stored as hex for readability.
+//! bitswype fork: per-track playback output routing mask.  Stored as
+//! two hex words for the 128-bit mask.  The legacy single-word
+//! "outputmask" attribute is still read for backward compatibility
+//! (bit 63 was the old silent sentinel and migrates to empty mask)
+//! but new saves always write the split words.
 //! Upstream Audacity ignores unknown attributes, so projects
-//! round-trip cleanly even if someone opens them in upstream.
-static constexpr auto OutputMask_attr = "outputmask";
+//! round-trip cleanly either way.
+static constexpr auto OutputMaskLo_attr = "outputmasklo";
+static constexpr auto OutputMaskHi_attr = "outputmaskhi";
+static constexpr auto LegacyOutputMask_attr = "outputmask";
 
 bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &attrs)
 {
    if (tag == WaveTrack_tag) {
       double dblValue;
       long nValue;
+
+      // bitswype fork: start from "no outputmask attr seen".  If the
+      // attr loop below hits any outputmask* attribute, the track
+      // counts as having user intent; otherwise it is an upstream/
+      // pre-feature project and the post-load migration will
+      // materialize identity.
+      WaveTrackData::Get(*this).SetOutputMaskAttrSeen(false);
 
       for (const auto& pair : attrs)
       {
@@ -2531,11 +2577,44 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &
          else if (attr == NChannels_attr && value.TryGet(nValue) &&
                   nValue > 0)
             mLegacyNChannels = static_cast<int>(nValue);
-         else if (attr == OutputMask_attr) {
-            // bitswype fork: per-track playback output routing mask.
-            unsigned long long maskValue = 0;
-            if (value.TryGet(maskValue))
-               SetPlaybackOutputMask(static_cast<uint64_t>(maskValue));
+         else if (attr == OutputMaskLo_attr) {
+            // bitswype fork: low 64 bits of 128-bit routing mask.
+            unsigned long long v = 0;
+            if (value.TryGet(v)) {
+               auto m = GetPlaybackOutputMask();
+               m.lo = static_cast<uint64_t>(v);
+               SetPlaybackOutputMask(m);
+               WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
+            }
+         }
+         else if (attr == OutputMaskHi_attr) {
+            // bitswype fork: high 64 bits of 128-bit routing mask.
+            unsigned long long v = 0;
+            if (value.TryGet(v)) {
+               auto m = GetPlaybackOutputMask();
+               m.hi = static_cast<uint64_t>(v);
+               SetPlaybackOutputMask(m);
+               WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
+            }
+         }
+         else if (attr == LegacyOutputMask_attr) {
+            // bitswype fork: migrate legacy single-word outputmask.
+            // The old format used bit 63 as a "silent" sentinel; in the
+            // new model that maps to an empty mask.  Other bits are
+            // preserved in the low word of the new mask.
+            unsigned long long v = 0;
+            if (value.TryGet(v)) {
+               constexpr uint64_t kLegacySilentSentinel =
+                  uint64_t(1) << 63;
+               PlaybackOutputMask m;
+               if (static_cast<uint64_t>(v) == kLegacySilentSentinel)
+                  m = {}; // silent
+               else
+                  m.lo = static_cast<uint64_t>(v)
+                     & ~kLegacySilentSentinel;
+               SetPlaybackOutputMask(m);
+               WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
+            }
          }
          else if (attr == SampleFormat_attr && value.TryGet(nValue) &&
                   Sequence::IsValidSampleFormat(nValue))
@@ -2668,13 +2747,19 @@ void WaveTrack::WriteOneXML(const WaveChannel &channel, XMLWriter &xmlFile,
    if (iChannel == 0 && nChannels > 2)
       xmlFile.WriteAttr(NChannels_attr, static_cast<long>(nChannels));
 
-   // bitswype fork: per-track playback output routing mask.  Only write
-   // when non-default so upstream projects stay byte-identical when
-   // nothing has been explicitly routed.
+   // bitswype fork: always write both words of the 128-bit routing
+   // mask on the channel-0 row.  "Always" (vs "only when non-empty")
+   // is important so that on reload we can tell "user explicitly set
+   // silent" (empty mask with attrs present) from "legacy project
+   // with no routing metadata" (no attrs -> post-load migration
+   // synthesizes identity).  The attrs are unknown to upstream
+   // Audacity and ignored on load there.
    if (iChannel == 0) {
       const auto mask = track.GetPlaybackOutputMask();
-      if (mask != 0)
-         xmlFile.WriteAttr(OutputMask_attr, static_cast<size_t>(mask));
+      xmlFile.WriteAttr(OutputMaskLo_attr,
+         static_cast<size_t>(mask.lo));
+      xmlFile.WriteAttr(OutputMaskHi_attr,
+         static_cast<size_t>(mask.hi));
    }
 
    // VS: trying to save tracks that didn't pass all necessary
