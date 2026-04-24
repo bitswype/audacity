@@ -55,6 +55,7 @@ enum {
    PlayID,
    RecordID,
    ChannelsID,
+   PlayChannelsID, // bitswype fork: playback output channel count
    DefaultSampleRateChoice,
    ProjectSampleRateChoice
 };
@@ -62,6 +63,7 @@ enum {
 BEGIN_EVENT_TABLE(DevicePrefs, PrefsPanel)
    EVT_CHOICE(HostID, DevicePrefs::OnHost)
    EVT_CHOICE(RecordID, DevicePrefs::OnDevice)
+   EVT_CHOICE(PlayID, DevicePrefs::OnPlayDevice)
    EVT_CHOICE(DefaultSampleRateChoice, DevicePrefs::OnDefaultSampleRateChoice)
    EVT_CHOICE(ProjectSampleRateChoice, DevicePrefs::OnProjectSampleRateChoice)
 END_EVENT_TABLE()
@@ -116,6 +118,7 @@ void DevicePrefs::Populate()
    mRecordDevice = AudioIORecordingDevice.Read();
    mRecordSource = AudioIORecordingSource.Read();
    mRecordChannels = AudioIORecordChannels.Read();
+   mPlayChannels = AudioIOPlaybackChannels.ReadWithDefault(2);
 
    //------------------------- Main section --------------------
    // Now construct the GUI itself.
@@ -212,6 +215,15 @@ void DevicePrefs::PopulateOrExchange(ShuttleGui & S)
          S.Id(PlayID);
          mPlay = S.AddChoice(XXO("&Device:"),
                              {} );
+
+         // bitswype fork: playback output channel count, symmetric
+         // with the Recording > Channels choice a few lines below.
+         // Populated in OnPlayDevice from the selected device's
+         // maxOutputChannels.  Uses accelerator 'a' to avoid
+         // clashing with other &-shortcuts in the dialog.
+         S.Id(PlayChannelsID);
+         mPlayChannelsChoice = S.AddChoice(XXO("Ch&annels:"),
+                                           {} );
       }
       S.EndMultiColumn();
    }
@@ -430,6 +442,82 @@ void DevicePrefs::OnHost(wxCommandEvent & e)
    ShuttleGui::SetMinSize(mPlay, mPlay->GetStrings());
    ShuttleGui::SetMinSize(mRecord, mRecord->GetStrings());
    OnDevice(e);
+   // bitswype fork: also re-derive the Playback Channels list from
+   // whichever playback device is now selected.
+   OnPlayDevice(e);
+}
+
+void DevicePrefs::OnPlayDevice(wxCommandEvent & WXUNUSED(event))
+{
+   if (!mPlayChannelsChoice)
+      return;
+
+   int ndx = mPlay->GetCurrentSelection();
+   if (ndx == wxNOT_FOUND)
+      ndx = 0;
+
+   int sel = mPlayChannelsChoice->GetSelection();
+   int cnt = 0;
+
+   // If the play device list has real entries (not the "No devices
+   // found" placeholder), pull the channel count off its map.
+   DeviceSourceMap *outMap =
+      static_cast<DeviceSourceMap*>(mPlay->GetClientData(ndx));
+   if (outMap != NULL)
+      cnt = outMap->numChannels;
+
+   // Remember the existing selection in case it's still valid for
+   // the new device; otherwise we'll clamp below.
+   if (sel != wxNOT_FOUND)
+      mPlayChannels = sel + 1;
+
+   mPlayChannelsChoice->Clear();
+
+   // Sentinel fallback used by the recording side when the device
+   // reports no channels -- mirror that so the dropdown is never
+   // empty.
+   if (cnt <= 0)
+      cnt = 16;
+
+   // Same paranoia cap as the recording side for sanity on malformed
+   // device info.
+   if (cnt > 256)
+      cnt = 256;
+
+   // NOTE: mask storage uses a uint64_t, and bit 63 is reserved as
+   // the Playback Routing "explicit silent" sentinel (see
+   // kPlaybackRoutingSilentSentinel in ChannelRouting.h).  The
+   // Playback Routing dialog caps its columns at 63 for that reason.
+   // Here we're picking how many channels PortAudio will open the
+   // device with, not a mask -- so values 1..63 all work. Still,
+   // cap at 63 so the two controls agree on their maximum.
+   if (cnt > 63)
+      cnt = 63;
+
+   wxArrayStringEx channelnames;
+   for (int i = 0; i < cnt; i++) {
+      wxString name;
+      if (i == 0)
+         name = _("1 (Mono)");
+      else if (i == 1)
+         name = _("2 (Stereo)");
+      else
+         name = wxString::Format(wxT("%d"), i + 1);
+
+      channelnames.push_back(name);
+      int index = mPlayChannelsChoice->Append(name);
+      if (i == mPlayChannels - 1)
+         mPlayChannelsChoice->SetSelection(index);
+   }
+
+   // If the previously-saved value doesn't fit this device, fall
+   // back to the first entry rather than leaving the dropdown blank.
+   if (mPlayChannelsChoice->GetCount() &&
+       mPlayChannelsChoice->GetCurrentSelection() == wxNOT_FOUND)
+      mPlayChannelsChoice->SetSelection(0);
+
+   ShuttleGui::SetMinSize(mPlayChannelsChoice, channelnames);
+   Layout();
 }
 
 void DevicePrefs::OnDevice(wxCommandEvent & WXUNUSED(event))
@@ -524,6 +612,16 @@ bool DevicePrefs::Commit()
    }
    if (map)
       AudioIOPlaybackDevice.Write(map->deviceString);
+
+   // bitswype fork: write the playback channel count.  We read the
+   // selection regardless of whether the play device map is valid --
+   // if the user has a config with a missing device, we still want
+   // the channel count they picked to persist.
+   if (mPlayChannelsChoice && mPlayChannelsChoice->GetCount() > 0) {
+      const int idx = mPlayChannelsChoice->GetSelection();
+      if (idx != wxNOT_FOUND)
+         AudioIOPlaybackChannels.Write(idx + 1);
+   }
 
    map = NULL;
    if (mRecord->GetCount() > 0) {
