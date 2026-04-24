@@ -10,6 +10,18 @@
 #include <algorithm>
 #include <cstdint>
 
+#if defined(__GNUC__) || defined(__clang__)
+   #define AU_CTZ64(x) static_cast<unsigned>(__builtin_ctzll(x))
+#else
+   #include <intrin.h>
+   static inline unsigned AU_CTZ64(uint64_t x)
+   {
+      unsigned long idx;
+      _BitScanForward64(&idx, x);
+      return static_cast<unsigned>(idx);
+   }
+#endif
+
 namespace
 {
 //! Call @p visit(bit) for each set bit in the mask in low-to-high bit
@@ -24,7 +36,7 @@ void ForEachSetBitInRange(
    // Low word: bits 0..63
    uint64_t w = mask.lo;
    while (w != 0) {
-      const unsigned b = static_cast<unsigned>(__builtin_ctzll(w));
+      const unsigned b = AU_CTZ64(w);
       if (b >= cap)
          return;
       visit(b);
@@ -33,8 +45,7 @@ void ForEachSetBitInRange(
    // High word: bits 64..127
    w = mask.hi;
    while (w != 0) {
-      const unsigned b =
-         64u + static_cast<unsigned>(__builtin_ctzll(w));
+      const unsigned b = 64u + AU_CTZ64(w);
       if (b >= cap)
          return;
       visit(b);
