@@ -24,6 +24,7 @@ Paul Licameli split from TrackPanel.cpp
 #include "../../../../ProjectWindows.h"
 #include "../../../../RefreshCode.h"
 #include "../../../../toolbars/PlaybackRoutingDialog.h"
+#include "../../../../toolbars/RecordingRoutingDialog.h"
 #include "ShuttleGui.h"
 #include "SyncLock.h"
 #include "Theme.h"
@@ -136,6 +137,7 @@ enum {
 
    // bitswype fork: opens the Playback Routing Matrix dialog
    OnPlaybackRoutingID,
+   OnRecordingRoutingID,
 
    ChannelMenuID,
 
@@ -531,6 +533,7 @@ struct WaveTrackMenuTable : WaveTrackPopupMenuTable
 
    // bitswype fork: open the Playback Routing Matrix dialog
    void OnPlaybackRouting(wxCommandEvent & event);
+   void OnRecordingRouting(wxCommandEvent & event);
 };
 
 WaveTrackMenuTable &WaveTrackMenuTable::Instance()
@@ -686,11 +689,14 @@ BEGIN_POPUP_MENU(WaveTrackMenuTable)
          enableSplitStereo );
    EndSection();
 
-   // bitswype fork: per-track Playback Routing Matrix launcher
+   // bitswype fork: per-track Playback / Recording Routing Matrix launchers
    BeginSection( "Routing" );
       AppendItem( "PlaybackRouting", OnPlaybackRoutingID,
          XXO("Playback &Routing..."),
          POPUP_MENU_FN( OnPlaybackRouting ) );
+      AppendItem( "RecordingRouting", OnRecordingRoutingID,
+         XXO("Recording R&outing..."),
+         POPUP_MENU_FN( OnRecordingRouting ) );
    EndSection();
 
    BeginSection( "Format" );
@@ -954,6 +960,17 @@ void WaveTrackMenuTable::OnPlaybackRouting(wxCommandEvent &)
    auto &track = static_cast<WaveTrack&>(mpData->track);
    AudacityProject *const project = &mpData->project;
    PlaybackRoutingDialog dlg(
+      &GetProjectFrame(*project), *project, &track);
+   dlg.ShowModal();
+}
+
+//! bitswype fork: open the Recording Routing Matrix dialog, focused on
+//! the right-clicked wave track.
+void WaveTrackMenuTable::OnRecordingRouting(wxCommandEvent &)
+{
+   auto &track = static_cast<WaveTrack&>(mpData->track);
+   AudacityProject *const project = &mpData->project;
+   RecordingRoutingDialog dlg(
       &GetProjectFrame(*project), *project, &track);
    dlg.ShowModal();
 }

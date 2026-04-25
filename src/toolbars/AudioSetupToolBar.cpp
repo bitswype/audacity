@@ -33,6 +33,7 @@
 #include "../prefs/PrefsDialog.h"
 #include "../prefs/DevicePrefs.h"
 #include "PlaybackRoutingDialog.h"
+#include "RecordingRoutingDialog.h"
 #include "../widgets/AButton.h"
 #include "../widgets/BasicMenu.h"
 #include "wxWidgetsWindowPlacement.h"
@@ -223,6 +224,8 @@ void AudioSetupToolBar::OnAudioSetup(wxCommandEvent& WXUNUSED(evt))
    menu.AppendSeparator();
    //i18n-hint: Opens the bitswype fork's Playback Routing Matrix dialog
    menu.Append(kPlaybackRouting, _("Playback &Routing Matrix..."));
+   //i18n-hint: Opens the bitswype fork's Recording Routing Matrix dialog
+   menu.Append(kRecordingRouting, _("Recording R&outing Matrix..."));
    menu.Append(kAudioDeviceRescan, _("R&escan Audio Devices"));
    menu.Append(kAudioSettings, _("&Audio Settings..."));
 
@@ -230,6 +233,7 @@ void AudioSetupToolBar::OnAudioSetup(wxCommandEvent& WXUNUSED(evt))
    menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnAudioDeviceRescan, this, kAudioDeviceRescan);
    menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnSettings, this, kAudioSettings);
    menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnPlaybackRouting, this, kPlaybackRouting);
+   menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnRecordingRouting, this, kRecordingRouting);
 
    wxWindow* btn = FindWindow(ID_AUDIO_SETUP_BUTTON);
    wxRect r = btn->GetRect();
@@ -780,6 +784,12 @@ void AudioSetupToolBar::OnSettings(wxCommandEvent& event)
 void AudioSetupToolBar::OnPlaybackRouting(wxCommandEvent&)
 {
    PlaybackRoutingDialog dlg(&GetProjectFrame(mProject), mProject);
+   dlg.ShowModal();
+}
+
+void AudioSetupToolBar::OnRecordingRouting(wxCommandEvent&)
+{
+   RecordingRoutingDialog dlg(&GetProjectFrame(mProject), mProject);
    dlg.ShowModal();
 }
 
