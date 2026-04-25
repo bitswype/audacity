@@ -28,6 +28,7 @@
 
 #include "ClientData.h"
 #include "Observer.h"
+#include "PlaybackInputMask.h"
 #include "PlaybackOutputMask.h"
 #include "Project.h"
 #include "Track.h"
@@ -96,7 +97,69 @@ void AssignIdentityIfEmpty(WaveTrack& track, const TrackList& list)
    if (start >= kPlaybackOutputMaskBits)
       return; // mask full; leave track silent (user can reconfigure)
    track.SetPlaybackOutputMask(
-      PlaybackOutputMask::Identity(
+   PlaybackOutputMask::Identity(
+         start, static_cast<unsigned>(channels)));
+}
+
+//! Mirror of OccupiedBits / NextFreeSlot / AssignIdentityIfEmpty for
+//! the recording-input side.  Identity routing for input means
+//! "this track records from device input bits at its row position";
+//! we keep input and output lanes independent because a user might
+//! configure them separately, and an input slot that's occupied by
+//! another track's recording shouldn't also be claimed.
+PlaybackInputMask OccupiedInputBits(
+   const TrackList& list, const Track* exclude = nullptr)
+{
+   PlaybackInputMask occupied;
+   for (const auto& track : list) {
+      if (track == exclude)
+         continue;
+      const auto* wt = dynamic_cast<const WaveTrack*>(track);
+      if (!wt)
+         continue;
+      const auto m = wt->GetPlaybackInputMask();
+      occupied.lo |= m.lo;
+      occupied.hi |= m.hi;
+   }
+   return occupied;
+}
+
+unsigned NextFreeInputSlot(
+   const PlaybackInputMask& occupied, unsigned channelCount)
+{
+   if (channelCount == 0)
+      return 0;
+   for (unsigned start = 0;
+        start + channelCount <= kPlaybackInputMaskBits;
+        ++start)
+   {
+      bool fits = true;
+      for (unsigned n = 0; n < channelCount; ++n) {
+         if (occupied.test(start + n)) {
+            fits = false;
+            break;
+         }
+      }
+      if (fits)
+         return start;
+   }
+   return kPlaybackInputMaskBits;
+}
+
+void AssignIdentityInputIfEmpty(WaveTrack& track, const TrackList& list)
+{
+   if (!track.GetPlaybackInputMask().empty())
+      return;
+   const auto occupied = OccupiedInputBits(list, &track);
+   const auto channels = track.NChannels();
+   if (channels == 0)
+      return;
+   const auto start =
+      NextFreeInputSlot(occupied, static_cast<unsigned>(channels));
+   if (start >= kPlaybackInputMaskBits)
+      return; // mask full; leave track without an input route
+   track.SetPlaybackInputMask(
+      PlaybackInputMask::Identity(
          start, static_cast<unsigned>(channels)));
 }
 
@@ -121,8 +184,10 @@ public:
             const auto track = event.mpTrack.lock();
             if (!track)
                return;
-            if (auto* wt = dynamic_cast<WaveTrack*>(track.get()))
+            if (auto* wt = dynamic_cast<WaveTrack*>(track.get())) {
                AssignIdentityIfEmpty(*wt, mTrackList);
+               AssignIdentityInputIfEmpty(*wt, mTrackList);
+            }
          });
    }
 
@@ -137,16 +202,21 @@ private:
          auto* wt = dynamic_cast<WaveTrack*>(track);
          if (!wt)
             continue;
-         // Access the per-track flag through the data attachment.
-         // If an XML-loaded track saw any outputmask* attr, we trust
-         // its mask as-is (even if empty).  Otherwise, this is a
-         // legacy/upstream project -- synthesize identity.
-         if (wt->GetOutputMaskAttrSeen())
-            continue;
-         AssignIdentityIfEmpty(*wt, mTrackList);
-         // After the first identity assignment we treat the track as
-         // having explicit intent so subsequent saves round-trip.
-         wt->SetOutputMaskAttrSeen(true);
+         // Output side migration.
+         if (!wt->GetOutputMaskAttrSeen()) {
+            AssignIdentityIfEmpty(*wt, mTrackList);
+            wt->SetOutputMaskAttrSeen(true);
+         }
+         // Input side migration.  Tracks that came from upstream /
+         // pre-feature projects had no inputmask* attrs; we
+         // synthesize identity so they are recordable by default
+         // under the matrix model.  Tracks that DID see inputmask
+         // attrs keep whatever they were saved with (including
+         // empty == not a recording target).
+         if (!wt->GetInputMaskAttrSeen()) {
+            AssignIdentityInputIfEmpty(*wt, mTrackList);
+            wt->SetInputMaskAttrSeen(true);
+         }
       }
    }
 

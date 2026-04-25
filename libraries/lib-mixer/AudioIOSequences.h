@@ -12,6 +12,7 @@
 #ifndef __AUDACITY_AUDIO_IO_SEQUENCES__
 #define __AUDACITY_AUDIO_IO_SEQUENCES__
 
+#include "PlaybackInputMask.h"
 #include "PlaybackOutputMask.h"
 #include "WideSampleSequence.h"
 class ChannelGroup;
@@ -84,6 +85,12 @@ struct MIXER_API RecordableSequence {
    virtual void RepairChannels() = 0;
 
    virtual void InsertSilence(double t, double len) = 0;
+
+   //! bitswype fork: per-track 128-bit recording-input mask.
+   //! Default returns empty so non-WaveTrack RecordableSequences (none
+   //! at present) silently fall back to legacy 1:1 input routing.
+   //! See PlaybackInputMask.h.
+   virtual PlaybackInputMask GetPlaybackInputMask() const { return {}; }
 };
 
 using RecordableSequences = std::vector<std::shared_ptr<RecordableSequence>>;

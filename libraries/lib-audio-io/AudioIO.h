@@ -16,6 +16,8 @@
 #include "AudioIOBase.h" // to inherit
 #include "AudioIOSequences.h"
 #include "ChannelRouting.h"
+#include "PlaybackInputMask.h"
+#include "RouteRecordingSamples.h"
 #include "RouteTrackSamples.h"
 #include "PlaybackSchedule.h" // member variable
 
@@ -309,6 +311,21 @@ public:
    // Per-track output channel assignments, computed in AllocateBuffers.
    // See ChannelRouting.h for the routing rules.
    std::vector<TrackChannelAssignment> mChannelAssignments;
+
+   //! Snapshotted per-track input mask + channel count, captured at
+   //! StartStream so the buffer-exchange thread doesn't need to read
+   //! atomics on the hot path.  Empty when no track has a non-empty
+   //! input mask (legacy 1:1 record mode).  Same length as
+   //! mCaptureSequences.  See PlaybackInputMask.h.
+   struct CaptureRouting {
+      PlaybackInputMask mask;
+      size_t numChannels = 0;
+   };
+   std::vector<CaptureRouting> mCaptureRoutings;
+   //! True iff at least one captured track has a non-empty input mask.
+   //! Drives whether DrainRecordBuffers uses matrix routing or the
+   //! legacy strict-1:1 path.
+   bool mUseRecordingMatrix{ false };
 
    std::vector<std::unique_ptr<Mixer>> mPlaybackMixers;
 
@@ -657,6 +674,18 @@ private:
 
    //! Second part of SequenceBufferExchange
    void DrainRecordBuffers();
+
+   //! Matrix-routing variant of the per-pass record drain.  Called by
+   //! DrainRecordBuffers when mUseRecordingMatrix is true.  Returns
+   //! true if the matrix path successfully consumed this pass; false
+   //! to fall back to the legacy 1:1 path.
+   //! @param avail samples available across capture buffers
+   //! @param remainingSamples count remaining for the recording schedule
+   //! @param[in,out] latencyCorrected becomes false if discard couldn't complete
+   //! @param[in,out] newBlocks becomes true if any track flushed a new block
+   bool DrainRecordBuffersMatrix(
+      size_t avail, double remainingSamples,
+      bool& latencyCorrected, bool& newBlocks);
 
    /** \brief Get the number of audio samples free in all of the playback
    * buffers.

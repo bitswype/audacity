@@ -888,6 +888,31 @@ bool ProjectAudioManager::DoRecord(AudacityProject &project,
       }
 
       if (transportSequences.captureSequences.empty()) {
+         // bitswype fork: matrix-mode recording.  If any existing
+         // WaveTrack has a non-empty input mask, treat those as the
+         // capture targets (skip the legacy "create N new tracks
+         // based on AudioIORecordChannels" path).  This is the
+         // implicit mode switch -- tracks created in-app get
+         // identity input routing automatically (see
+         // PlaybackRoutingListener), so a populated project is
+         // always in matrix mode unless the user has explicitly
+         // cleared every input mask.
+         for (auto pTrack : trackList.Any<WaveTrack>()) {
+            if (!pTrack->GetPlaybackInputMask().empty()) {
+               // Pad the existing track up to t0 if it ends earlier,
+               // and create a new clip at t0 to record into.  We do
+               // not use pendingTracks here because we want the
+               // recorded data to land directly in the existing
+               // track (matrix mode is opt-in via the routing dialog
+               // and behaves like overdub from the user's view).
+               insertEmptyInterval(*pTrack, t0, false);
+               transportSequences.captureSequences.push_back(
+                  pTrack->SharedPointer<WaveTrack>());
+            }
+         }
+      }
+
+      if (transportSequences.captureSequences.empty()) {
          // recording to NEW track(s).
          bool recordingNameCustom, useTrackNumber, useDateStamp, useTimeStamp;
          wxString defaultTrackName, defaultRecordingTrackName;
