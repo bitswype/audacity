@@ -67,6 +67,7 @@ time warp info and AudioIOListener and whether the playback is looped.
 #include "DeviceManager.h"
 
 #include <cfloat>
+#include <cstring>
 #include <math.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -850,6 +851,121 @@ void AudioIO::StartMonitoring( const AudioIOStartStreamOptions &options )
       // advertise the chosen I/O sample rate to the UI
       pListener->OnAudioIORate((int)mRate);
    }
+}
+
+namespace {
+// Helpers shared by Start/UpdateTestTone -- copies the request fields
+// into the atomic snapshot the audio callback reads.  Mode is written
+// LAST so a reader that sees mode != Off can trust the rest of the
+// snapshot is current.
+inline void StoreTestToneRequest(
+   const TestToneRequest& req,
+   std::atomic<int>& mode, std::atomic<int>& type,
+   std::atomic<uint64_t>& freq, std::atomic<uint64_t>& level,
+   AtomicPlaybackOutputMask& mask)
+{
+   uint64_t freqBits = 0;
+   std::memcpy(&freqBits, &req.frequencyHz, sizeof(double));
+   uint64_t levelBits = 0;
+   std::memcpy(&levelBits, &req.levelDb, sizeof(double));
+   type.store(static_cast<int>(req.toneType), std::memory_order_relaxed);
+   freq.store(freqBits, std::memory_order_relaxed);
+   level.store(levelBits, std::memory_order_relaxed);
+   mask.Store(req.mask);
+   // Mode last -- consumers gate on mode != Off.
+   mode.store(static_cast<int>(req.mode), std::memory_order_release);
+}
+} // namespace
+
+bool AudioIO::StartTestTone(const TestToneRequest& request,
+   const AudioIOStartStreamOptions& options)
+{
+   if (mPortStreamV19 || mStreamToken)
+      return false;
+   if (request.mode == TestToneRequest::Mode::Off)
+      return false;
+
+   const unsigned int playbackChannels =
+      static_cast<unsigned int>(std::max(1, AudioIOPlaybackChannels.Read()));
+
+   mUsingAlsa = false;
+   mCaptureFormat = floatSample;
+   mCaptureRate = 44100.0; // unused, no capture
+   const bool success =
+      StartPortAudioStream(options, playbackChannels, /*captureChannels*/ 0);
+   if (!success)
+      return false;
+
+   // Configure generator from the request.  Sample rate comes from
+   // the negotiated mRate set by StartPortAudioStream.
+   mTestToneGen.Reset();
+   mTestToneGen.Configure(
+      request.toneType, request.frequencyHz, request.levelDb, mRate);
+
+   // Pre-size scratch.  PortAudio's framesPerBuffer is set to
+   // paFramesPerBufferUnspecified at open time, so we cannot bound it
+   // exactly; size for a generous worst case (4096 frames).  If a
+   // backend ever requests more, the inner loops handle it -- they
+   // grow the vector first.
+   constexpr size_t kInitialFrames = 4096;
+   mTestToneSrcBuf.assign(kInitialFrames, 0.0f);
+   mTestToneOutBufs.assign(mNumPlaybackChannels,
+      std::vector<float>(kInitialFrames, 0.0f));
+
+   // Publish the request snapshot, then flip the active flag.  Order
+   // matters: callback gates on mTestToneActive, so the snapshot must
+   // be visible by the time the flag is true.
+   StoreTestToneRequest(request,
+      mTestToneMode, mTestToneType,
+      mTestToneFreqBits, mTestToneLevelDbBits,
+      mTestToneMask);
+   mTestToneActive.store(true, std::memory_order_release);
+
+   mLastPaError = Pa_StartStream(mPortStreamV19);
+   if (mLastPaError != paNoError) {
+      mTestToneActive.store(false, std::memory_order_relaxed);
+      Pa_CloseStream(mPortStreamV19);
+      mPortStreamV19 = nullptr;
+      return false;
+   }
+
+   auto pListener = GetListener();
+   if (pListener)
+      pListener->OnAudioIORate(static_cast<int>(mRate));
+
+   return true;
+}
+
+void AudioIO::UpdateTestTone(const TestToneRequest& request)
+{
+   if (!mTestToneActive.load(std::memory_order_relaxed))
+      return;
+   StoreTestToneRequest(request,
+      mTestToneMode, mTestToneType,
+      mTestToneFreqBits, mTestToneLevelDbBits,
+      mTestToneMask);
+}
+
+void AudioIO::StopTestTone()
+{
+   if (!mTestToneActive.load(std::memory_order_relaxed))
+      return;
+   // Flip flag first so the next callback emits silence; then close.
+   mTestToneActive.store(false, std::memory_order_release);
+   mTestToneMode.store(static_cast<int>(TestToneRequest::Mode::Off),
+      std::memory_order_relaxed);
+
+   if (mPortStreamV19) {
+      if (!Pa_IsStreamStopped(mPortStreamV19))
+         Pa_AbortStream(mPortStreamV19);
+      Pa_CloseStream(mPortStreamV19);
+      mPortStreamV19 = nullptr;
+   }
+   // Release scratch.
+   mTestToneSrcBuf.clear();
+   mTestToneSrcBuf.shrink_to_fit();
+   mTestToneOutBufs.clear();
+   mTestToneOutBufs.shrink_to_fit();
 }
 
 int AudioIO::StartStream(const TransportSequences &sequences,
@@ -3220,6 +3336,121 @@ bool AudioIoCallback::FillOutputBuffers(
    return false;
 }
 
+void AudioIoCallback::FillTestToneOutputBuffer(
+   float* outputFloats, unsigned long framesPerBuffer,
+   float* outputMeterFloats)
+{
+   if (!outputFloats || mNumPlaybackChannels == 0)
+      return;
+
+   // Pull current parameters from the snapshot.  We re-Configure() the
+   // generator on every callback rather than tracking deltas -- the
+   // cost is trivial (a few math ops) and removes a class of races
+   // where the dialog updates field A then field B and the audio
+   // thread reads them in the wrong order.
+   const auto mode = static_cast<TestToneRequest::Mode>(
+      mTestToneMode.load(std::memory_order_acquire));
+   const auto type = static_cast<TestToneGenerator::Type>(
+      mTestToneType.load(std::memory_order_relaxed));
+   double freq, level;
+   {
+      const uint64_t fb =
+         mTestToneFreqBits.load(std::memory_order_relaxed);
+      const uint64_t lb =
+         mTestToneLevelDbBits.load(std::memory_order_relaxed);
+      std::memcpy(&freq, &fb, sizeof(double));
+      std::memcpy(&level, &lb, sizeof(double));
+   }
+   const PlaybackOutputMask mask = mTestToneMask.Load();
+
+   if (mode == TestToneRequest::Mode::Off || mask.empty()) {
+      // outputFloats is already zeroed by DoPlaythrough; no work.
+      return;
+   }
+
+   mTestToneGen.Configure(type, freq, level, mRate);
+
+   // Grow scratch if PortAudio gave us a larger block than we
+   // pre-sized for.  Allocation here is safe-ish on most desktop
+   // backends (rare event, only at first oversized callback) but
+   // technically violates the no-allocate-in-callback rule.  Tracked
+   // as known tech-debt: see roadmap notes.
+   if (mTestToneSrcBuf.size() < framesPerBuffer)
+      mTestToneSrcBuf.resize(framesPerBuffer);
+   if (mode == TestToneRequest::Mode::ThroughMatrix) {
+      if (mTestToneOutBufs.size() < mNumPlaybackChannels)
+         mTestToneOutBufs.resize(mNumPlaybackChannels);
+      for (auto& buf : mTestToneOutBufs)
+         if (buf.size() < framesPerBuffer)
+            buf.resize(framesPerBuffer);
+   }
+
+   // 1. Synthesise the mono source buffer.
+   mTestToneGen.Render(mTestToneSrcBuf.data(), framesPerBuffer);
+
+   // 2. Distribute to outputs per the mode.
+   if (mode == TestToneRequest::Mode::DirectHW) {
+      // Walk the device's reachable bits in the mask, write tone
+      // directly to the interleaved output buffer at that channel.
+      // Bits past mNumPlaybackChannels are ignored (the device
+      // physically cannot reach them).
+      const float* src = mTestToneSrcBuf.data();
+      const size_t devCh = mDevicePlaybackChannels;
+      for (unsigned ch = 0; ch < mNumPlaybackChannels; ++ch) {
+         if (!mask.test(ch))
+            continue;
+         for (unsigned long i = 0; i < framesPerBuffer; ++i)
+            outputFloats[devCh * i + ch] += src[i];
+      }
+   } else {
+      // ThroughMatrix: actually run the production routing function
+      // on the synthesised tone, then interleave into outputFloats.
+      // This exercises the same code path real tracks use, so a
+      // matrix-mode test failing while direct-mode passes localises
+      // the bug to RouteTrackSamples or its mask interpretation.
+      for (auto& buf : mTestToneOutBufs)
+         std::fill_n(buf.begin(), framesPerBuffer, 0.0f);
+
+      std::vector<float*> dstPtrs(mNumPlaybackChannels);
+      for (size_t n = 0; n < mNumPlaybackChannels; ++n)
+         dstPtrs[n] = mTestToneOutBufs[n].data();
+      float* srcPtr = mTestToneSrcBuf.data();
+      float* const* srcPtrs = &srcPtr;
+
+      TrackChannelAssignment assignment;
+      assignment.outputMask = mask;
+      RouteTrackSamples(
+         assignment,
+         /*numSourceChannels*/ 1,
+         /*numOutputChannels*/ mNumPlaybackChannels,
+         /*samplesAvailable*/ framesPerBuffer,
+         /*getChannelVolume*/ [](int) { return 1.0f; },
+         srcPtrs,
+         dstPtrs.data());
+
+      const size_t devCh = mDevicePlaybackChannels;
+      for (unsigned ch = 0; ch < mNumPlaybackChannels; ++ch) {
+         const float* d = mTestToneOutBufs[ch].data();
+         for (unsigned long i = 0; i < framesPerBuffer; ++i)
+            outputFloats[devCh * i + ch] += d[i];
+      }
+   }
+
+   // Mirror to meter buffer if it is separate from outputFloats.
+   if (outputMeterFloats != outputFloats) {
+      const size_t total =
+         static_cast<size_t>(framesPerBuffer) * mDevicePlaybackChannels;
+      for (size_t i = 0; i < total; ++i)
+         outputMeterFloats[i] += outputFloats[i];
+   }
+
+   ClampBuffer(outputFloats,
+      framesPerBuffer * mDevicePlaybackChannels);
+   if (outputMeterFloats != outputFloats)
+      ClampBuffer(outputMeterFloats,
+         framesPerBuffer * mDevicePlaybackChannels);
+}
+
 void AudioIoCallback::UpdateTimePosition(unsigned long framesPerBuffer)
 {
    // Quick returns if next to nothing to do.
@@ -3605,6 +3836,18 @@ int AudioIoCallback::AudioCallback(
       outputBuffer,
       framesPerBuffer,
       outputMeterFloats);
+
+   // bitswype fork: channel test tone takes over the output path.
+   // Replaces FillOutputBuffers / UpdateTimePosition / DrainInputBuffers
+   // entirely; the test-tone stream has no playback sequences, no
+   // capture sequences, and no schedule.  Meter still runs so the user
+   // sees per-channel level on the output meter.
+   if (mTestToneActive.load(std::memory_order_acquire)) {
+      FillTestToneOutputBuffer(
+         outputBuffer, framesPerBuffer, outputMeterFloats);
+      SendVuOutputMeterData(outputMeterFloats, framesPerBuffer);
+      return mCallbackReturn;
+   }
 
    // Test for no sequence audio to play (because we are paused and have faded
    // out)
