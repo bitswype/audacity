@@ -1003,11 +1003,23 @@ int AudioIO::StartStream(const TransportSequences &sequences,
    }
 
    if (mCaptureSequences.size() > 0) {
-      numCaptureChannels = accumulate(
-         mCaptureSequences.begin(), mCaptureSequences.end(), size_t{},
-         [](auto acc, const auto &pSequence) {
-            return acc + pSequence->NChannels();
-         });
+      if (mUseRecordingMatrix) {
+         // bitswype fork: in matrix mode, the device input channel
+         // count is independent of how many destination track-channels
+         // exist (one input may feed many tracks; one mono track may
+         // sum many inputs).  Use the user-configured recording
+         // channel count.  Mask bits referencing channels beyond this
+         // value are surfaced in the routing dialog as off-device but
+         // not opened on PortAudio, so they capture silence.
+         numCaptureChannels = static_cast<size_t>(
+            std::max(1, AudioIORecordChannels.Read()));
+      } else {
+         numCaptureChannels = accumulate(
+            mCaptureSequences.begin(), mCaptureSequences.end(), size_t{},
+            [](auto acc, const auto &pSequence) {
+               return acc + pSequence->NChannels();
+            });
+      }
       // I don't deal with the possibility of the capture sequences
       // having different sample formats, since it will never happen
       // with the current code.  This code wouldn't *break* if this

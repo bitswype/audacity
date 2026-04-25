@@ -486,8 +486,36 @@ void RecordingRoutingDialog::OnResetRow(int rowIndex)
       return;
    auto &row = mRows[rowIndex];
    const auto channels = row.track ? row.track->NChannels() : size_t{0};
-   auto identity = PlaybackInputMask::Identity(
-      static_cast<unsigned>(rowIndex), static_cast<unsigned>(channels));
+   if (channels == 0)
+      return;
+
+   // Compute lowest channel slot whose [start, start+channels) range
+   // is unoccupied by any OTHER row's CURRENT checkbox state.  See
+   // PlaybackRoutingDialog::OnResetRow for the design rationale.
+   PlaybackInputMask occupied;
+   for (size_t r = 0; r < mRows.size(); ++r) {
+      if (static_cast<int>(r) == rowIndex)
+         continue;
+      const auto m = MaskFromCheckboxes(
+         mRows[r].checks, mNumOutputChannels);
+      occupied.lo |= m.lo;
+      occupied.hi |= m.hi;
+   }
+   unsigned start = 0;
+   const unsigned want = static_cast<unsigned>(channels);
+   while (start + want <= kMaxDisplayChannels) {
+      bool fits = true;
+      for (unsigned n = 0; n < want; ++n) {
+         if (occupied.test(start + n)) { fits = false; break; }
+      }
+      if (fits)
+         break;
+      ++start;
+   }
+   if (start + want > kMaxDisplayChannels)
+      return;
+
+   const auto identity = PlaybackInputMask::Identity(start, want);
    CheckboxesFromMask(row.checks, identity, mNumOutputChannels);
 }
 

@@ -897,19 +897,37 @@ bool ProjectAudioManager::DoRecord(AudacityProject &project,
          // PlaybackRoutingListener), so a populated project is
          // always in matrix mode unless the user has explicitly
          // cleared every input mask.
+         //
+         // Use the same pending-track machinery as the append path so
+         // that an aborted matrix-mode recording (StartStream failure,
+         // user cancel before any block flushes) rolls back cleanly
+         // and leaves no stale empty clips in the real tracks.
+         auto matrixUpdater = [](Track &d, const Track &s){
+            assert(d.NChannels() == s.NChannels());
+            auto &dst = static_cast<WaveTrack&>(d);
+            auto &src = static_cast<const WaveTrack&>(s);
+            dst.Init(src);
+         };
+         bool anyMatrixTrack = false;
          for (auto pTrack : trackList.Any<WaveTrack>()) {
-            if (!pTrack->GetPlaybackInputMask().empty()) {
-               // Pad the existing track up to t0 if it ends earlier,
-               // and create a new clip at t0 to record into.  We do
-               // not use pendingTracks here because we want the
-               // recorded data to land directly in the existing
-               // track (matrix mode is opt-in via the routing dialog
-               // and behaves like overdub from the user's view).
-               insertEmptyInterval(*pTrack, t0, false);
-               transportSequences.captureSequences.push_back(
-                  pTrack->SharedPointer<WaveTrack>());
-            }
+            if (pTrack->GetPlaybackInputMask().empty())
+               continue;
+            anyMatrixTrack = true;
+            // Place an empty clip at t0 marked as placeholder so it
+            // survives copy-into-pending but doesn't leak if we abort.
+            auto newClip = insertEmptyInterval(*pTrack, t0, true);
+            const auto pending = static_cast<WaveTrack*>(
+               pendingTracks.RegisterPendingChangedTrack(
+                  matrixUpdater, pTrack));
+            if (newClip)
+               newClip->SetIsPlaceholder(false);
+            if (auto copiedClip = pending->NewestOrNewClip())
+               copiedClip->SetIsPlaceholder(false);
+            transportSequences.captureSequences.push_back(
+               pending->SharedPointer<WaveTrack>());
          }
+         if (anyMatrixTrack)
+            pendingTracks.UpdatePendingTracks();
       }
 
       if (transportSequences.captureSequences.empty()) {
