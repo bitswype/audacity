@@ -310,7 +310,7 @@ MixerTrackCluster::MixerTrackCluster(wxWindow* parent,
                    this, -1, // wxWindow* parent, wxWindowID id,
                    false, // bool isInput
                    ctrlPos, ctrlSize, // const wxPoint& pos = wxDefaultPosition, const wxSize& size = wxDefaultSize,
-                   MeterPanel::MixerTrackCluster); // Style style = HorizontalStereo,
+                   MeterPanel::MixerTrackCluster); // Style style = Horizontal,
       mMeter->SetName(XO("Signal Level Meter"));
    }
 

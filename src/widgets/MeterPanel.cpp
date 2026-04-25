@@ -196,9 +196,9 @@ const static int gap = 0;
 
 const static wxChar *PrefStyles[] =
 {
-   wxT("AutomaticStereo"),
-   wxT("HorizontalStereo"),
-   wxT("VerticalStereo")
+   wxT("Automatic"),
+   wxT("Horizontal"),
+   wxT("Vertical")
 };
 
 enum {
@@ -232,7 +232,7 @@ MeterPanel::MeterPanel(AudacityProject *project,
              bool isInput,
              const wxPoint& pos /*= wxDefaultPosition*/,
              const wxSize& size /*= wxDefaultSize*/,
-             Style style /*= HorizontalStereo*/,
+             Style style /*= Horizontal*/,
              float fDecayRate /*= 60.0f*/)
 : MeterPanelBase(parent, id, pos, size, wxTAB_TRAVERSAL | wxNO_BORDER | wxWANTS_CHARS),
    mProject(project),
@@ -354,21 +354,27 @@ void MeterPanel::UpdatePrefs()
    if (mDesiredStyle != MixerTrackCluster)
    {
       wxString style = gPrefs->Read(Key(wxT("Style")));
-      if (style == wxT("AutomaticStereo"))
+      // bitswype fork: the Style enum was renamed from
+      // {Automatic,Horizontal,Vertical}Stereo to channel-agnostic
+      // {Automatic,Horizontal,Vertical} names so multichannel meters
+      // make sense.  Saved prefs may still hold the legacy strings;
+      // accept both forms on read so users don't lose their layout
+      // preference across the upgrade.
+      if (style == wxT("Automatic") || style == wxT("AutomaticStereo"))
       {
-         mDesiredStyle = AutomaticStereo;
+         mDesiredStyle = Automatic;
       }
-      else if (style == wxT("HorizontalStereo"))
+      else if (style == wxT("Horizontal") || style == wxT("HorizontalStereo"))
       {
-         mDesiredStyle = HorizontalStereo;
+         mDesiredStyle = Horizontal;
       }
-      else if (style == wxT("VerticalStereo"))
+      else if (style == wxT("Vertical") || style == wxT("VerticalStereo"))
       {
-         mDesiredStyle = VerticalStereo;
+         mDesiredStyle = Vertical;
       }
       else
       {
-         mDesiredStyle = AutomaticStereo;
+         mDesiredStyle = Automatic;
       }
    }
 
@@ -621,7 +627,7 @@ void MeterPanel::OnPaint(wxPaintEvent & WXUNUSED(event))
    destDC.SetTextForeground( clrText );
 
    // We can have numbers over the bars, in which case we have to draw them each time.
-   if(mStyle == HorizontalStereoCompact || mStyle == VerticalStereoCompact)
+   if(mStyle == HorizontalCompact || mStyle == VerticalCompact)
    {
       mRuler.SetTickColour( clrText );
       // If the text colour is too similar to the meter colour, then we need a background
@@ -756,7 +762,7 @@ void MeterPanel::OnKillFocus(wxFocusEvent & WXUNUSED(evt))
 
 void MeterPanel::SetStyle(Style newStyle)
 {
-   if (mStyle != newStyle && mDesiredStyle == AutomaticStereo)
+   if (mStyle != newStyle && mDesiredStyle == Automatic)
    {
       SetActiveStyle(newStyle);
 
@@ -1157,7 +1163,7 @@ void MeterPanel::SetActiveStyle(Style newStyle)
    if (mDB)
    {
       mRuler.SetFormat(&LinearDBFormat::Instance());
-      if (mStyle == HorizontalStereo || mStyle == HorizontalStereoCompact)
+      if (mStyle == Horizontal || mStyle == HorizontalCompact)
       {
          mRuler.SetOrientation(wxHORIZONTAL);
          mRuler.SetRange(-mDBRange, 0);
@@ -1171,7 +1177,7 @@ void MeterPanel::SetActiveStyle(Style newStyle)
    else
    {
       mRuler.SetFormat(&RealFormat::LinearInstance());
-      if (mStyle == HorizontalStereo || mStyle == HorizontalStereoCompact)
+      if (mStyle == Horizontal || mStyle == HorizontalCompact)
       {
          mRuler.SetOrientation(wxHORIZONTAL);
          mRuler.SetRange(0, 1);
@@ -1253,18 +1259,18 @@ void MeterPanel::HandleLayout(wxDC &dc)
    // MixerTrackCluster has no L/R labels or icon
    if (mStyle != MixerTrackCluster)
    {
-      if (mDesiredStyle == AutomaticStereo)
+      if (mDesiredStyle == Automatic)
       {
-         SetActiveStyle(width > height ? HorizontalStereo : VerticalStereo);
+         SetActiveStyle(width > height ? Horizontal : Vertical);
       }
 
-      if (mStyle == HorizontalStereoCompact || mStyle == HorizontalStereo)
+      if (mStyle == HorizontalCompact || mStyle == Horizontal)
       {
-         SetActiveStyle(height < 50 ? HorizontalStereoCompact : HorizontalStereo);
+         SetActiveStyle(height < 50 ? HorizontalCompact : Horizontal);
       }
-      else if (mStyle == VerticalStereoCompact || mStyle == VerticalStereo)
+      else if (mStyle == VerticalCompact || mStyle == Vertical)
       {
-         SetActiveStyle(width < 100 ? VerticalStereoCompact : VerticalStereo);
+         SetActiveStyle(width < 100 ? VerticalCompact : Vertical);
       }
 
       if (mLeftSize.GetWidth() == 0)  // Not yet initialized to dc.
@@ -1317,7 +1323,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
                        mBar[1].r.GetBottom());
       mRuler.OfflimitsPixels(0, 0);
       break;
-   case VerticalStereo:
+   case Vertical:
       // Determine required width of each side;
       lside = ltxtWidth + gap;
       rside = intmax(mRulerWidth, rtxtWidth);
@@ -1370,7 +1376,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
                        mBar[1].r.GetBottom());
       mRuler.OfflimitsPixels(mRightTextPos.y - gap, mBar[1].r.GetBottom());
       break;
-   case VerticalStereoCompact:
+   case VerticalCompact:
       // Ensure there's a margin between top edge of window and the meters
       top = gap;
 
@@ -1410,7 +1416,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
                        mBar[1].r.GetBottom());
       mRuler.OfflimitsPixels(0, 0);
       break;
-   case HorizontalStereo:
+   case Horizontal:
       // Button right next to dragger.
       left = 0;
 
@@ -1464,7 +1470,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
                        mBar[1].r.GetRight(),
                        mHeight - mBar[1].r.GetBottom() + 1);
       break;
-   case HorizontalStereoCompact:
+   case HorizontalCompact:
       left = gap;
 
       // L/R is centered vertically and to the left of a each bar
@@ -1991,11 +1997,11 @@ void MeterPanel::OnPreferences(wxCommandEvent & WXUNUSED(event))
            S.StartVerticalLay();
            {
               automatic = S.AddRadioButton(
-                  XXO("Automatic"), AutomaticStereo, mDesiredStyle);
+                  XXO("Automatic"), Automatic, mDesiredStyle);
               horizontal = S.AddRadioButtonToGroup(
-                  XXO("Horizontal"), HorizontalStereo, mDesiredStyle);
+                  XXO("Horizontal"), Horizontal, mDesiredStyle);
               vertical = S.AddRadioButtonToGroup(
-                  XXO("Vertical"), VerticalStereo, mDesiredStyle);
+                  XXO("Vertical"), Vertical, mDesiredStyle);
            }
            S.EndVerticalLay();
         }
@@ -2013,9 +2019,9 @@ void MeterPanel::OnPreferences(wxCommandEvent & WXUNUSED(event))
    if (dlg.ShowModal() == wxID_OK)
    {
       wxArrayStringEx style{
-         wxT("AutomaticStereo") ,
-         wxT("HorizontalStereo") ,
-         wxT("VerticalStereo") ,
+         wxT("Automatic") ,
+         wxT("Horizontal") ,
+         wxT("Vertical") ,
       };
 
       int s = 0;
