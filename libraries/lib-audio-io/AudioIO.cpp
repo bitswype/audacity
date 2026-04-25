@@ -2527,6 +2527,17 @@ bool AudioIO::DrainRecordBuffersMatrix(
          // Per-destination crossfade against the existing track
          // samples (punch-and-roll).  Index in mCrossfadeData is
          // the destination's flat (track, channel) position.
+         //
+         // KNOWN LIMITATION: punch-and-roll's CROSSFADE data is
+         // populated by TransportMenus.cpp punch-and-roll setup using
+         // a per-track resize that overwrites earlier tracks' data
+         // (TODO at line 307 of TransportMenus.cpp: "more-than-two-
+         // channels").  In matrix mode the destLinearIndex below is
+         // a valid per-destination flat walk, so the crossfade WOULD
+         // work correctly here -- but only the last selected track's
+         // data ever survives the populator's resize loop.  Fixing
+         // that is upstream territory.  Plain overdub (mLatency
+         // Correction without crossfade) works fine in matrix mode.
          if (destLinearIndex < mRecordingSchedule.mCrossfadeData.size())
          {
             const auto& data =
