@@ -25,6 +25,7 @@
 
 #include "MixerOptions.h" // for MIXER_API
 
+#include <atomic>
 #include <cstdint>
 
 //! 128-bit per-track playback output channel mask.
@@ -103,3 +104,67 @@ struct MIXER_API PlaybackOutputMask
 
 //! Maximum number of output channels representable by a PlaybackOutputMask.
 constexpr unsigned kPlaybackOutputMaskBits = 128;
+
+//! Single-writer / multi-reader atomic accessor for PlaybackOutputMask.
+//!
+//! The 128-bit mask is split across two 64-bit atomic words because
+//! std::atomic<__int128_t> is not portably lock-free.  A naive
+//! "store lo, store hi" / "load lo, load hi" pair leaves a window in
+//! which a reader can observe lo from one Store call paired with hi
+//! from a different Store call -- a torn read.
+//!
+//! This class closes that window with a seqlock (Linux-kernel style):
+//! Store increments a sequence counter to an odd value, performs the
+//! lo/hi stores, then increments to even.  Load reads the counter,
+//! reads lo/hi, re-reads the counter; if either snapshot saw an odd
+//! value or the two reads disagree, Load retries.  The retry path is
+//! finite-step under any single-writer schedule because the writer is
+//! always making forward progress on the counter.
+//!
+//! Constraints:
+//!   - At most one writer thread.  Concurrent writers can both observe
+//!     the same "current seq" and stamp interleaved stores.  In
+//!     practice the only writers are the GUI thread (dialog Apply,
+//!     PlaybackRoutingListener); they are serialized.
+//!   - Any number of reader threads, including the audio worker.
+//!   - Reads are wait-free under no-contention; under contention they
+//!     spin until the writer finishes (microseconds).
+class MIXER_API AtomicPlaybackOutputMask final
+{
+public:
+   AtomicPlaybackOutputMask() = default;
+
+   //! Copy-construct by snapshotting the source.  Required because
+   //! std::atomic is non-copyable, but WaveTrackData::Clone copies the
+   //! enclosing struct.
+   AtomicPlaybackOutputMask(const AtomicPlaybackOutputMask& other) noexcept
+   {
+      Store(other.Load());
+   }
+
+   AtomicPlaybackOutputMask& operator=(
+      const AtomicPlaybackOutputMask& other) noexcept
+   {
+      if (this != &other)
+         Store(other.Load());
+      return *this;
+   }
+
+   AtomicPlaybackOutputMask(AtomicPlaybackOutputMask&&) = delete;
+   AtomicPlaybackOutputMask& operator=(AtomicPlaybackOutputMask&&) = delete;
+
+   //! Read the current mask value.  Safe to call from any thread.
+   //! Will retry under contention with a writer.
+   PlaybackOutputMask Load() const noexcept;
+
+   //! Write a new mask value.  Single-writer only.
+   void Store(PlaybackOutputMask mask) noexcept;
+
+private:
+   //! Even when stable; odd when a writer is mid-update.
+   //! Mutable so Load() (a const operation) can read it without
+   //! casts at every call site.
+   mutable std::atomic<uint64_t> mSeq{ 0 };
+   std::atomic<uint64_t> mLo{ 0 };
+   std::atomic<uint64_t> mHi{ 0 };
+};

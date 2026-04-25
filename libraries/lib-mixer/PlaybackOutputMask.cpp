@@ -62,3 +62,45 @@ PlaybackOutputMask PlaybackOutputMask::Identity(
    }
    return m;
 }
+
+PlaybackOutputMask AtomicPlaybackOutputMask::Load() const noexcept
+{
+   // Seqlock read pattern: keep retrying until we observe a stable
+   // even sequence number bracketing both halves of the value.
+   for (;;) {
+      const uint64_t s1 = mSeq.load(std::memory_order_acquire);
+      // Odd seq means a writer is mid-update; spin briefly and retry.
+      // This is bounded under single-writer because the writer always
+      // advances seq forward.
+      if (s1 & uint64_t(1))
+         continue;
+      const uint64_t lo = mLo.load(std::memory_order_relaxed);
+      const uint64_t hi = mHi.load(std::memory_order_relaxed);
+      // Acquire fence pairs with the writer's release on the trailing
+      // seq store; ensures lo/hi values we just read can't be
+      // reordered after the seq re-read below.
+      std::atomic_thread_fence(std::memory_order_acquire);
+      const uint64_t s2 = mSeq.load(std::memory_order_relaxed);
+      if (s1 == s2)
+         return PlaybackOutputMask{ lo, hi };
+      // Sequence advanced between our two reads -- a writer published
+      // a new value somewhere in the middle.  Retry.
+   }
+}
+
+void AtomicPlaybackOutputMask::Store(PlaybackOutputMask mask) noexcept
+{
+   // Single-writer: relaxed read of seq is OK, no other writer can
+   // observe-and-modify in between.  We bracket the lo/hi stores with
+   // odd (mid-write) and then-even (committed) seq values.
+   const uint64_t s = mSeq.load(std::memory_order_relaxed);
+   mSeq.store(s + 1, std::memory_order_relaxed);
+   // Release fence ensures the lo/hi stores below cannot be reordered
+   // before the odd-seq store above (so a reader that sees the odd seq
+   // also sees no writer-side stores of the new value yet).
+   std::atomic_thread_fence(std::memory_order_release);
+   mLo.store(mask.lo, std::memory_order_relaxed);
+   mHi.store(mask.hi, std::memory_order_relaxed);
+   // Release on the trailing seq store publishes lo/hi to readers.
+   mSeq.store(s + 2, std::memory_order_release);
+}

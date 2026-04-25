@@ -7,6 +7,7 @@ add_unit_test(
    NAME
       lib-mixer
    SOURCES
+      AtomicPlaybackOutputMaskTest.cpp
       ChannelRoutingTest.cpp
       PlaybackOutputMaskTest.cpp
       RouteTrackSamplesTest.cpp

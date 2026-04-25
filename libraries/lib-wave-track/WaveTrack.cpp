@@ -253,15 +253,13 @@ private:
    //! 128-bit mask of device output channels this track routes to.
    //! Bit N set == send the track's audio to output channel N.
    //! Empty mask (both words zero) == track is silent.
-   //! Split across two atomics because std::atomic<__int128> is not
-   //! portable; reads and writes of the pair are NOT atomic together.
-   //! This is acceptable because the mask is only sampled at
-   //! StartStream (snapshotted into a vector), not on the audio hot
-   //! path, so a torn read at worst means one playback session sees a
-   //! half-updated mask.  See the design note in
-   //! .claude/plans/playback-routing-128bit-static-masks.md.
-   std::atomic<uint64_t> mPlaybackOutputMaskLo{ 0 };
-   std::atomic<uint64_t> mPlaybackOutputMaskHi{ 0 };
+   //! Stored via AtomicPlaybackOutputMask, which uses a seqlock to
+   //! guarantee that readers always observe a self-consistent
+   //! (lo, hi) pair even when a writer updates the mask
+   //! concurrently.  Single-writer constraint is satisfied because
+   //! all writers (dialog Apply, PlaybackRoutingListener) run on the
+   //! GUI thread.
+   AtomicPlaybackOutputMask mPlaybackOutputMask;
    //! See GetOutputMaskAttrSeen().  Defaults true: tracks created
    //! in-app don't need migration.  XML load clears this, then any
    //! outputmask* attr encountered sets it back.
@@ -352,16 +350,12 @@ void WaveTrackData::SetRate(int value)
 
 PlaybackOutputMask WaveTrackData::GetPlaybackOutputMask() const
 {
-   PlaybackOutputMask m;
-   m.lo = mPlaybackOutputMaskLo.load(std::memory_order_relaxed);
-   m.hi = mPlaybackOutputMaskHi.load(std::memory_order_relaxed);
-   return m;
+   return mPlaybackOutputMask.Load();
 }
 
 void WaveTrackData::SetPlaybackOutputMask(PlaybackOutputMask mask)
 {
-   mPlaybackOutputMaskLo.store(mask.lo, std::memory_order_relaxed);
-   mPlaybackOutputMaskHi.store(mask.hi, std::memory_order_relaxed);
+   mPlaybackOutputMask.Store(mask);
 }
 
 namespace {
