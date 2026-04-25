@@ -82,6 +82,12 @@ private:
    //! to the header (horizontal) and labels (vertical) sub-regions.
    void OnMatrixScroll(wxScrollWinEvent &event);
 
+   //! Reposition the children of the (non-scrolling) header and
+   //! labels panels to match the matrix's current scroll offset.
+   //! Called from the matrix scroll handler and the dialog resize
+   //! handler.
+   void SyncHeaderAndLabelPositions();
+
    AudacityProject &mProject;
    size_t mNumOutputChannels = 0;
    std::vector<TrackRow> mRows;
@@ -89,13 +95,32 @@ private:
    // Geometry constants filled in ComputeInitialSize and reused by
    // BuildUI so the sub-panels line up pixel-for-pixel.
    int mColumnWidth = 28;     //!< pixels per matrix column
-   int mRowHeight = 24;       //!< pixels per matrix row
+   //! Pixels per matrix row.  Sized to the natural height of a
+   //! wxButton on GTK -- forcing rows shorter ellipsizes the Reset
+   //! button's label.
+   int mRowHeight = 32;
    int mLabelColWidth = 220;  //!< left-frozen column width (label + Reset)
-   int mHeaderRowHeight = 24; //!< top-frozen row height
+   int mHeaderRowHeight = 28; //!< top-frozen row height
 
-   wxScrolledCanvas *mCornerPanel = nullptr;
-   wxScrolledCanvas *mHeaderPanel = nullptr;
-   wxScrolledCanvas *mLabelsPanel = nullptr;
+   //! Header and labels are plain wxPanels; their children are
+   //! positioned manually via SyncHeaderAndLabelPositions so they
+   //! never go through wxScrolledWindow's blit/realize/unrealize
+   //! paths -- those caused stale Reset buttons after resize+scroll
+   //! when these were wxScrolledCanvas.
+   wxPanel *mCornerPanel = nullptr;
+   wxPanel *mHeaderPanel = nullptr;
+   wxPanel *mLabelsPanel = nullptr;
+   //! Per-row label children kept around so we can move them on
+   //! every scroll.  Same length as mRows.
+   struct LabelRow {
+      wxStaticText *text = nullptr;
+      wxButton *resetBtn = nullptr;
+   };
+   std::vector<LabelRow> mLabelRows;
+   //! Per-channel header label children, similarly.
+   std::vector<wxStaticText *> mHeaderLabels;
+
+   //! Matrix is the only panel that actually scrolls.
    wxScrolledCanvas *mMatrixPanel = nullptr;
    wxStaticText *mStatusText = nullptr;
 };

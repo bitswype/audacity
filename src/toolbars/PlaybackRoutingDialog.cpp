@@ -13,6 +13,7 @@
 #include <wx/dcclient.h>
 #include <wx/display.h>
 #include <wx/scrolwin.h>
+#include <wx/settings.h>
 #include <wx/sizer.h>
 #include <wx/stattext.h>
 
@@ -135,29 +136,34 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          .Translation());
    outer->Add(header, 0, wxEXPAND | wxALL, 8);
 
-   // ----------------- 2x2 grid of scrolled canvases -----------------
+   // ----------------- 4-region scroll-synced layout -----------------
    //
-   // +---------+----------------------+
-   // | corner  | column-header panel  |  (horizontally synced)
-   // +---------+----------------------+
-   // | labels  | matrix panel         |  (vertically synced)
-   // | panel   | (the only one with   |
-   // |         |  visible scrollbars) |
-   // +---------+----------------------+
+   // +---------+--------------------+---+
+   // | corner  | header panel       | sp|  topRow (no scrollbars)
+   // +---------+--------------------+---+
+   // | labels  | matrix panel       |Vsb|  bodyRow
+   // |         | (with scrollbars)  |   |
+   // +---------+--------------------+---+
+   // | spacer  | Hsb in matrix      |   |
+   // +---------+--------------------+---+
    //
-   // The header / labels panels have their own scrollbars hidden;
-   // they scroll programmatically via OnMatrixScroll.
-   // The corner is fixed (never scrolls).
+   // The matrix is the only panel that displays its scrollbars;
+   // they sit at its own right and bottom edges and consume ~17px
+   // each from its client area.  To keep header and labels' content
+   // areas aligned with the matrix's content area, we add explicit
+   // spacer cells next to them whose size matches the scrollbar
+   // dimensions.  Without these spacers, labels visually ends 17px
+   // higher than the matrix's last row, which makes the bottom row
+   // of checkboxes appear "below" the labels column.
+   const int kVScrollW =
+      wxSystemSettings::GetMetric(wxSYS_VSCROLL_X);
+   const int kHScrollH =
+      wxSystemSettings::GetMetric(wxSYS_HSCROLL_Y);
 
-   auto *grid = new wxFlexGridSizer(/*cols=*/2, 0, 0);
-   grid->AddGrowableCol(1, 1);
-   grid->AddGrowableRow(1, 1);
-
-   // --- Corner panel (fixed, no scroll) ---
-   mCornerPanel = new wxScrolledCanvas(this, wxID_ANY,
+   // --- Corner panel (fixed, no scroll, never moves) ---
+   mCornerPanel = new wxPanel(this, wxID_ANY,
       wxDefaultPosition, wxSize(mLabelColWidth, mHeaderRowHeight),
       wxBORDER_NONE);
-   mCornerPanel->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
    mCornerPanel->SetMinSize(wxSize(mLabelColWidth, mHeaderRowHeight));
    {
       auto *cornerSz = new wxBoxSizer(wxHORIZONTAL);
@@ -165,39 +171,24 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          1, wxALIGN_CENTER_VERTICAL | wxLEFT, 4);
       mCornerPanel->SetSizer(cornerSz);
    }
-   grid->Add(mCornerPanel, 0, wxEXPAND);
 
-   // --- Header panel (horizontal scroll only, scrollbar hidden) ---
-   mHeaderPanel = new wxScrolledCanvas(this, wxID_ANY,
+   // --- Header panel (plain wxPanel; children moved on scroll) ---
+   mHeaderPanel = new wxPanel(this, wxID_ANY,
       wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-   mHeaderPanel->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
-   mHeaderPanel->SetScrollRate(kScrollUnit, 0);
    mHeaderPanel->SetMinSize(wxSize(-1, mHeaderRowHeight));
-   {
-      auto *headerSz = new wxBoxSizer(wxHORIZONTAL);
-      for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
-         auto *label = new wxStaticText(mHeaderPanel, wxID_ANY,
-            wxString::Format("%zu", ch + 1),
-            wxDefaultPosition, wxSize(mColumnWidth, mHeaderRowHeight),
-            wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL);
-         headerSz->Add(label, 0);
-      }
-      mHeaderPanel->SetSizer(headerSz);
-      mHeaderPanel->SetVirtualSize(
-         static_cast<int>(mNumOutputChannels) * mColumnWidth,
-         mHeaderRowHeight);
+   for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
+      auto *label = new wxStaticText(mHeaderPanel, wxID_ANY,
+         wxString::Format("%zu", ch + 1),
+         wxPoint(static_cast<int>(ch) * mColumnWidth, 0),
+         wxSize(mColumnWidth, mHeaderRowHeight),
+         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL);
+      mHeaderLabels.push_back(label);
    }
-   grid->Add(mHeaderPanel, 1, wxEXPAND);
 
-   // --- Labels panel (vertical scroll only, scrollbar hidden) ---
-   mLabelsPanel = new wxScrolledCanvas(this, wxID_ANY,
+   // --- Labels panel (plain wxPanel; children moved on scroll) ---
+   mLabelsPanel = new wxPanel(this, wxID_ANY,
       wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-   mLabelsPanel->ShowScrollbars(wxSHOW_SB_NEVER, wxSHOW_SB_NEVER);
-   mLabelsPanel->SetScrollRate(0, kScrollUnit);
    mLabelsPanel->SetMinSize(wxSize(mLabelColWidth, -1));
-   auto *labelsSz = new wxBoxSizer(wxVERTICAL);
-   mLabelsPanel->SetSizer(labelsSz);
-   grid->Add(mLabelsPanel, 0, wxEXPAND);
 
    // --- Matrix panel (both scrolls visible; drives the others) ---
    mMatrixPanel = new wxScrolledCanvas(this, wxID_ANY,
@@ -205,7 +196,29 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
    mMatrixPanel->SetScrollRate(kScrollUnit, kScrollUnit);
    auto *matrixSz = new wxBoxSizer(wxVERTICAL);
    mMatrixPanel->SetSizer(matrixSz);
-   grid->Add(mMatrixPanel, 1, wxEXPAND);
+
+   // Assemble the layout now that all four panels exist.  The grid
+   // is row-major: top row holds corner+header (no scrollbars), body
+   // row holds labels+matrix (matrix has scrollbars at its own
+   // bottom and right edges).  Spacer cells reserve scrollbar-equal
+   // gaps next to header (right) and labels (bottom) so their
+   // content areas line up exactly with the matrix's content area.
+   auto *topRow = new wxBoxSizer(wxHORIZONTAL);
+   topRow->Add(mCornerPanel, 0);
+   topRow->Add(mHeaderPanel, 1, wxEXPAND);
+   topRow->AddSpacer(kVScrollW);
+
+   auto *labelsCol = new wxBoxSizer(wxVERTICAL);
+   labelsCol->Add(mLabelsPanel, 1, wxEXPAND);
+   labelsCol->AddSpacer(kHScrollH);
+
+   auto *bodyRow = new wxBoxSizer(wxHORIZONTAL);
+   bodyRow->Add(labelsCol, 0, wxEXPAND);
+   bodyRow->Add(mMatrixPanel, 1, wxEXPAND);
+
+   auto *grid = new wxBoxSizer(wxVERTICAL);
+   grid->Add(topRow, 0, wxEXPAND);
+   grid->Add(bodyRow, 1, wxEXPAND);
 
    // --- Populate labels + matrix rows ---
    wxWindow *focusTarget = nullptr;
@@ -213,33 +226,44 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
       auto &row = mRows[rowIndex];
       const int capturedRow = static_cast<int>(rowIndex);
 
-      // Labels column: track name + inline Reset button.
-      auto *labelRow = new wxBoxSizer(wxHORIZONTAL);
+      // Labels column: track name + Reset button positioned
+      // manually so we can move them ourselves on scroll without
+      // wxScrolledWindow getting in the way.  Logical y is just
+      // rowIndex * mRowHeight; SyncHeaderAndLabelPositions
+      // subtracts the matrix's scroll offset on every scroll/resize.
+      const int rowY = capturedRow * mRowHeight;
       auto *nameText = new wxStaticText(mLabelsPanel, wxID_ANY,
          row.track->GetName(),
-         wxDefaultPosition, wxSize(-1, mRowHeight),
+         wxPoint(4, rowY),
+         wxSize(mLabelColWidth - 64, mRowHeight),
          wxST_ELLIPSIZE_END | wxALIGN_CENTER_VERTICAL);
-      labelRow->Add(nameText, 1, wxALIGN_CENTER_VERTICAL | wxLEFT, 4);
       auto *resetBtn = new wxButton(mLabelsPanel, wxID_ANY, _("Reset"),
-         wxDefaultPosition, wxDefaultSize, wxBU_EXACTFIT);
+         wxPoint(mLabelColWidth - 60, rowY + 2),
+         wxSize(56, mRowHeight - 4), wxBU_EXACTFIT);
       resetBtn->Bind(wxEVT_BUTTON,
          [this, capturedRow](wxCommandEvent &) {
             this->OnResetRow(capturedRow);
          });
-      labelRow->Add(resetBtn, 0, wxALIGN_CENTER_VERTICAL | wxLEFT | wxRIGHT, 2);
-      labelsSz->Add(labelRow, 0, wxEXPAND);
+      mLabelRows.push_back(LabelRow{ nameText, resetBtn });
 
-      // Matrix row of checkboxes.
+      // Matrix row of checkboxes.  Same fixed-height panel wrapper
+      // for the same reason.
+      auto *rowPanel = new wxPanel(mMatrixPanel, wxID_ANY,
+         wxDefaultPosition,
+         wxSize(static_cast<int>(mNumOutputChannels) * mColumnWidth,
+                mRowHeight));
+      rowPanel->SetMinSize(wxSize(
+         static_cast<int>(mNumOutputChannels) * mColumnWidth,
+         mRowHeight));
       auto *checkRow = new wxBoxSizer(wxHORIZONTAL);
       for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
-         auto *check = new wxCheckBox(mMatrixPanel, wxID_ANY,
+         auto *check = new wxCheckBox(rowPanel, wxID_ANY,
             wxEmptyString,
             wxDefaultPosition, wxSize(mColumnWidth, mRowHeight),
             wxALIGN_CENTER);
          check->SetValue(
             row.originalStoredMask.test(static_cast<unsigned>(ch)));
          const int capturedCol = static_cast<int>(ch);
-         // Update the status line on hover and keyboard focus.
          check->Bind(wxEVT_ENTER_WINDOW,
             [this, capturedRow, capturedCol](wxMouseEvent &e) {
                this->UpdateStatus(capturedRow, capturedCol);
@@ -253,21 +277,19 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          row.checks.push_back(check);
          checkRow->Add(check, 0);
       }
-      matrixSz->Add(checkRow, 0);
+      rowPanel->SetSizer(checkRow);
+      matrixSz->Add(rowPanel, 0);
 
       if (row.track == focusedTrack)
          focusTarget = row.checks.empty() ? nullptr : row.checks[0];
    }
 
-   // Tell scrolled windows their virtual size so scrollbars size
-   // correctly.
-   const int matrixVirtW =
-      static_cast<int>(mNumOutputChannels) * mColumnWidth;
-   const int matrixVirtH =
-      static_cast<int>(mRows.size()) * mRowHeight;
-   mMatrixPanel->SetVirtualSize(matrixVirtW, matrixVirtH);
-   mLabelsPanel->SetVirtualSize(mLabelColWidth, matrixVirtH);
-   mHeaderPanel->SetVirtualSize(matrixVirtW, mHeaderRowHeight);
+   // FitInside on the matrix sets its virtual size from the
+   // sizer's MinSize, which is what makes its scrollbars appear
+   // when the rows/columns overflow the panel's client area.
+   // The header and labels are plain wxPanels with manually-
+   // positioned children -- they don't need a virtual size.
+   mMatrixPanel->FitInside();
 
    outer->Add(grid, 1, wxEXPAND | wxALL, 6);
 
@@ -309,33 +331,64 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
       &PlaybackRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_THUMBRELEASE,
       &PlaybackRoutingDialog::OnMatrixScroll, this);
+   // Mouse-wheel scroll fires wxEVT_SCROLLWIN_LINE{UP,DOWN}, already
+   // covered above.  Keyboard arrow-key scroll within the matrix
+   // also triggers SCROLLWIN_*, also covered.
+
+   // Re-fit virtual sizes and force a full redraw whenever the
+   // dialog is resized.  Without this, the labels' virtual height
+   // can lag behind the actual content after a resize, which makes
+   // Scroll() clamp wrong on the next scroll event and leaves
+   // newly-revealed Reset buttons mis-positioned.
+   Bind(wxEVT_SIZE, [this](wxSizeEvent &e) {
+      e.Skip();
+      if (mMatrixPanel) mMatrixPanel->FitInside();
+      // Reposition header and labels children to match the matrix's
+      // (possibly clamped) scroll position after the resize.
+      SyncHeaderAndLabelPositions();
+   });
 
    if (focusTarget) {
       int x, y;
       focusTarget->GetPosition(&x, &y);
       mMatrixPanel->Scroll(0, y);
-      mLabelsPanel->Scroll(0, y);
+      SyncHeaderAndLabelPositions();
       focusTarget->SetFocus();
    }
 }
 
 void PlaybackRoutingDialog::OnMatrixScroll(wxScrollWinEvent &event)
 {
-   // Let the matrix process the scroll normally, then propagate the
-   // resulting view position to the header (horizontal) and labels
-   // (vertical) panels.  GetViewStart reports in scroll units; since
-   // we set kScrollUnit = 1 on all panels, the units are pixels.
    event.Skip();
-   // Defer reading the view start until the matrix has updated;
-   // CallAfter is the usual way.  But for hidden-scrollbar linked
-   // panels a direct read works in practice on all three platforms
-   // we build for.
+   SyncHeaderAndLabelPositions();
+}
+
+void PlaybackRoutingDialog::SyncHeaderAndLabelPositions()
+{
+   // Header and labels are plain (non-scrolling) wxPanels.  We
+   // reposition their children to (logical_pos - matrix_scroll).
+   // The wxPanel naturally clips drawing to its bounds, so children
+   // moved off-panel disappear visually without needing scroll
+   // logic.  This avoids the GTK realize/unrealize quirks that
+   // wxScrolledWindow's blit-style scroll triggers on resize.
+   if (!mMatrixPanel)
+      return;
    int vx = 0, vy = 0;
    mMatrixPanel->GetViewStart(&vx, &vy);
-   // Apply to siblings.  wxScrolledCanvas::Scroll clamps out-of-range
-   // positions against the virtual size.
-   mHeaderPanel->Scroll(vx, 0);
-   mLabelsPanel->Scroll(0, vy);
+
+   for (size_t ch = 0; ch < mHeaderLabels.size(); ++ch) {
+      if (auto *lbl = mHeaderLabels[ch]) {
+         const int x = static_cast<int>(ch) * mColumnWidth - vx;
+         lbl->Move(x, 0);
+      }
+   }
+   for (size_t i = 0; i < mLabelRows.size(); ++i) {
+      const int rowY = static_cast<int>(i) * mRowHeight - vy;
+      if (auto *t = mLabelRows[i].text)
+         t->Move(4, rowY);
+      if (auto *b = mLabelRows[i].resetBtn)
+         b->Move(mLabelColWidth - 60, rowY + 2);
+   }
 }
 
 void PlaybackRoutingDialog::UpdateStatus(int rowIndex, int colIndex)
