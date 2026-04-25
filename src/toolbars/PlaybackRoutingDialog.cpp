@@ -169,10 +169,11 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          auto *notice = new wxStaticText(this, wxID_ANY,
             wxString::Format(
                _("Note: %u track(s) route to channels beyond your "
-                 "%zu-channel playback device.  Off-device columns "
+                 "%u-channel playback device.  Off-device columns "
                  "are marked with * and will be silent until you "
                  "switch to a device with more outputs."),
-               offCount, mNumDeviceChannels));
+               offCount,
+               static_cast<unsigned>(mNumDeviceChannels)));
          notice->SetForegroundColour(
             wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
          outer->Add(notice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
@@ -468,8 +469,9 @@ void PlaybackRoutingDialog::UpdateStatus(int rowIndex, int colIndex)
    if (offDevice)
       mStatusText->SetLabel(wxString::Format(
          _("Track %d ('%s'), output %d (beyond device's "
-           "%zu channels -- silent)"),
-         rowIndex + 1, name, colIndex + 1, mNumDeviceChannels));
+           "%u channels -- silent)"),
+         rowIndex + 1, name, colIndex + 1,
+         static_cast<unsigned>(mNumDeviceChannels)));
    else
       mStatusText->SetLabel(wxString::Format(
          _("Track %d ('%s'), output %d"),

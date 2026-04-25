@@ -8,6 +8,7 @@
 #include "PlaybackOutputMask.h"
 
 #include <algorithm>
+#include <cassert>
 
 #if defined(__GNUC__) || defined(__clang__)
    #define AU_POPCOUNT64(x) __builtin_popcountll(x)
@@ -38,11 +39,10 @@ bool PlaybackOutputMask::hasBitsAboveDeviceWidth(
       return false;
    if (numDeviceChannels >= 64) {
       // All of lo is in range; check the high word past the boundary.
+      // shift is in [0, 64) here -- the 128-cap branch above handled
+      // numDeviceChannels >= 128 already, so shift == 64 cannot occur.
       const unsigned shift = numDeviceChannels - 64;
-      // Mask off the bits that are within range.
-      const uint64_t inRange = (shift == 64)
-         ? ~uint64_t(0)
-         : ((uint64_t(1) << shift) - 1);
+      const uint64_t inRange = (uint64_t(1) << shift) - 1;
       return (hi & ~inRange) != 0;
    }
    // Some bits of lo are out of range, all of hi is out of range.
@@ -131,6 +131,11 @@ unsigned ComputeRoutingDialogColumnCount(
    const std::vector<PlaybackOutputMask>& trackMasks,
    const std::vector<unsigned>& trackChannelCounts)
 {
+   // Catch caller bugs in debug; in release fall back to the shorter
+   // vector to avoid OOB access (silent truncation), but the API
+   // contract is "same size".
+   assert(trackMasks.size() == trackChannelCounts.size());
+
    unsigned columns = std::max(2u, deviceChannels);
    columns = std::max(columns, MaxSetBitPlusOne(trackMasks));
 

@@ -2573,23 +2573,37 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &
             mLegacyNChannels = static_cast<int>(nValue);
          else if (attr == OutputMaskLo_attr) {
             // bitswype fork: low 64 bits of 128-bit routing mask.
-            unsigned long long v = 0;
-            if (value.TryGet(v)) {
-               auto m = GetPlaybackOutputMask();
-               m.lo = static_cast<uint64_t>(v);
-               SetPlaybackOutputMask(m);
-               WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
-            }
+            // Try unsigned first (the new format, %llu).  If that
+            // fails, fall back to signed: an earlier version wrote
+            // size_t via the long-long overload, which produces
+            // negative decimals for any value with bit 63 set.  The
+            // bit pattern is the same; reinterpret via bit_cast.
+            uint64_t bits = 0;
+            if (unsigned long long v = 0; value.TryGet(v))
+               bits = static_cast<uint64_t>(v);
+            else if (long long sv = 0; value.TryGet(sv))
+               bits = static_cast<uint64_t>(sv);
+            else
+               continue;
+            auto m = GetPlaybackOutputMask();
+            m.lo = bits;
+            SetPlaybackOutputMask(m);
+            WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
          }
          else if (attr == OutputMaskHi_attr) {
             // bitswype fork: high 64 bits of 128-bit routing mask.
-            unsigned long long v = 0;
-            if (value.TryGet(v)) {
-               auto m = GetPlaybackOutputMask();
-               m.hi = static_cast<uint64_t>(v);
-               SetPlaybackOutputMask(m);
-               WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
-            }
+            // See OutputMaskLo_attr for fallback rationale.
+            uint64_t bits = 0;
+            if (unsigned long long v = 0; value.TryGet(v))
+               bits = static_cast<uint64_t>(v);
+            else if (long long sv = 0; value.TryGet(sv))
+               bits = static_cast<uint64_t>(sv);
+            else
+               continue;
+            auto m = GetPlaybackOutputMask();
+            m.hi = bits;
+            SetPlaybackOutputMask(m);
+            WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
          }
          else if (attr == LegacyOutputMask_attr) {
             // bitswype fork: migrate legacy single-word outputmask.
@@ -2750,10 +2764,19 @@ void WaveTrack::WriteOneXML(const WaveChannel &channel, XMLWriter &xmlFile,
    // Audacity and ignored on load there.
    if (iChannel == 0) {
       const auto mask = track.GetPlaybackOutputMask();
+      // Format as unsigned decimal explicitly via wxString.
+      // XMLWriter::WriteAttr(size_t) internally casts to long long
+      // and uses %lld, which produces a NEGATIVE string for any value
+      // with bit 63 set (e.g. routing a track to channel 63 or 127).
+      // FromChars rejects '-' for unsigned target types, so the
+      // attribute is silently dropped on reload and the routing
+      // disappears.  Side-step that by formatting %llu ourselves.
       xmlFile.WriteAttr(OutputMaskLo_attr,
-         static_cast<size_t>(mask.lo));
+         wxString::Format(wxT("%llu"),
+            static_cast<unsigned long long>(mask.lo)));
       xmlFile.WriteAttr(OutputMaskHi_attr,
-         static_cast<size_t>(mask.hi));
+         wxString::Format(wxT("%llu"),
+            static_cast<unsigned long long>(mask.hi)));
    }
 
    // VS: trying to save tracks that didn't pass all necessary

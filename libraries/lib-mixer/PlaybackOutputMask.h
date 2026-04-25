@@ -75,8 +75,10 @@ struct MIXER_API PlaybackOutputMask
          hi &= ~(uint64_t(1) << (bit - 64));
    }
 
-   //! Highest set bit index + 1, or 0 if empty.
-   //! Useful for sizing scans / dialog column counts.
+   //! Population count: number of bits set in the mask.
+   //! NOT to be confused with the highest-set-bit index, which is a
+   //! different quantity (e.g. {bit 100 set} has popcount 1 and
+   //! highest-set-bit 100).
    unsigned popcount() const;
 
    //! True iff any bit >= @p numDeviceChannels is set.
