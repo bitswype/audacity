@@ -474,8 +474,43 @@ void MeterPanel::OnPaint(wxPaintEvent & WXUNUSED(event))
          dc.SetFont(GetFont());
          dc.SetTextForeground( clrText );
          dc.SetTextBackground( clrBoxFill );
-         dc.DrawText(mLeftText, mLeftTextPos.x, mLeftTextPos.y);
-         dc.DrawText(mRightText, mRightTextPos.x, mRightTextPos.y);
+         if (mNumBars == 2) {
+            // Stereo: draw the legacy L/R labels.
+            dc.DrawText(mLeftText, mLeftTextPos.x, mLeftTextPos.y);
+            dc.DrawText(mRightText, mRightTextPos.x, mRightTextPos.y);
+         }
+         else {
+            // bitswype fork: draw numeric per-channel labels for
+            // multichannel meters.  Suppress when the bar is too
+            // narrow to fit the label text -- the hover tooltip
+            // still surfaces the channel number.
+            mShowChannelLabels = true;
+            for (unsigned i = 0;
+                 i < mNumBars && i < mChannelLabels.size(); ++i)
+            {
+               wxSize sz;
+               dc.GetTextExtent(mChannelLabels[i], &sz.x, &sz.y);
+               // Width-vs-bar test for vertical bars; height-vs-bar
+               // test for horizontal bars.  We approximate by
+               // requiring sz.x <= bar dimension on the relevant axis.
+               const auto& barRect = mBar[i].b;
+               const bool tooSmall =
+                  (sz.GetWidth() > barRect.GetWidth() + 4) ||
+                  (sz.GetHeight() > barRect.GetHeight() + 4);
+               if (tooSmall) {
+                  mShowChannelLabels = false;
+                  break;
+               }
+            }
+            if (mShowChannelLabels) {
+               for (unsigned i = 0;
+                    i < mNumBars && i < mChannelLabels.size(); ++i)
+               {
+                  dc.DrawText(mChannelLabels[i],
+                     mChannelLabelPos[i].x, mChannelLabelPos[i].y);
+               }
+            }
+         }
       }
 
       // Setup the colors for the 3 sections of the meter bars
@@ -684,6 +719,32 @@ void MeterPanel::OnMouse(wxMouseEvent &evt)
    else if(evt.Leaving())
       mTipTimer.Stop();
 
+   // bitswype fork: hover tooltip surfaces channel number, especially
+   // useful when the per-bar label is too narrow to display.  Updated
+   // on motion only -- cheap (linear scan over mNumBars).
+   if (evt.GetEventType() == wxEVT_MOTION && mNumBars > 0) {
+      const wxPoint pos = evt.GetPosition();
+      int hovered = -1;
+      for (unsigned i = 0; i < mNumBars; ++i) {
+         if (mBar[i].b.Contains(pos)) {
+            hovered = static_cast<int>(i);
+            break;
+         }
+      }
+      if (hovered >= 0 &&
+          hovered < static_cast<int>(mChannelLabels.size()))
+      {
+         const wxString tip = wxString::Format(
+            _("Channel %s"), mChannelLabels[hovered]);
+         if (GetToolTipText() != tip)
+            wxWindow::SetToolTip(tip);
+      }
+      else
+      {
+         UnsetToolTip();
+      }
+   }
+
    if (evt.RightDown())
       ShowMenu(evt.GetPosition());
    else
@@ -862,6 +923,33 @@ void MeterPanel::Reset(double sampleRate, bool resetClipping)
    mTimer.Start(1000 / mMeterRefreshRate);
 
    Refresh(false);
+}
+
+void MeterPanel::SetNumChannels(unsigned numChannels)
+{
+   // MixerTrackCluster is a per-track meter; keep its 1-or-2 channel
+   // shape regardless of what the audio stream advertises.
+   if (mStyle == MixerTrackCluster)
+      return;
+
+   if (numChannels == 0)
+      numChannels = 1;
+   if (numChannels > static_cast<unsigned>(kMaxMeterBars))
+      numChannels = static_cast<unsigned>(kMaxMeterBars);
+
+   if (mDesiredNumChannels == numChannels)
+      return;
+
+   mDesiredNumChannels = numChannels;
+   // Force HandleLayout to run again with the new bar count on the
+   // next paint.
+   mLayoutValid = false;
+   // Reset L/R label cache so the size lookup re-fires for whatever
+   // labels we end up using (L/R for stereo vs numeric for >2).
+   mLeftSize = wxSize{ 0, 0 };
+   mRightSize = wxSize{ 0, 0 };
+   if (IsShownOnScreen())
+      Refresh(false);
 }
 
 static float floatMax(float a, float b)
@@ -1246,6 +1334,32 @@ void MeterPanel::HandleLayout(wxDC &dc)
    /* i18n-hint: One-letter abbreviation for Right, in VU Meter */
    mRightText = _("R");
 
+   // bitswype fork: bar count comes from mDesiredNumChannels (set by
+   // AudioIO via SetNumChannels) rather than being hardcoded to 2.
+   // Per-track meters (MixerTrackCluster) keep the legacy 2-bar
+   // layout because they reflect track shape, not device shape.
+   if (mStyle == MixerTrackCluster) {
+      mNumBars = 2;
+   } else {
+      mNumBars = std::min(
+         std::max(1u, mDesiredNumChannels),
+         static_cast<unsigned>(kMaxMeterBars));
+   }
+
+   // Build the per-bar label list.  Stereo keeps L/R; everything
+   // else gets numeric "1".."N" labels.  Whether we DRAW them is
+   // decided at paint time based on whether they fit in the bar.
+   mChannelLabels.clear();
+   mChannelLabels.reserve(mNumBars);
+   if (mNumBars == 2) {
+      mChannelLabels.push_back(mLeftText);
+      mChannelLabels.push_back(mRightText);
+   } else {
+      for (unsigned i = 0; i < mNumBars; ++i)
+         mChannelLabels.push_back(wxString::Format(wxT("%u"), i + 1));
+   }
+   mChannelLabelPos.assign(mNumBars, wxPoint{ 0, 0 });
+
    dc.SetFont(GetFont());
    int width = mWidth;
    int height = mHeight;
@@ -1323,7 +1437,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
                        mBar[1].r.GetBottom());
       mRuler.OfflimitsPixels(0, 0);
       break;
-   case Vertical:
+   case Vertical: {
       // Determine required width of each side;
       lside = ltxtWidth + gap;
       rside = intmax(mRulerWidth, rtxtWidth);
@@ -1334,7 +1448,9 @@ void MeterPanel::HandleLayout(wxDC &dc)
       // Ensure there's a margin between top edge of window and the meters
       top = gap;
 
-      // Position the L/R labels
+      // Position the L/R labels.  For >2 channels they're suppressed
+      // by the paint-time check (mShowChannelLabels); we still
+      // initialise them harmlessly for layout purposes.
       mLeftTextPos = wxPoint(left - ltxtWidth - gap, height - gap - ltxtHeight);
       mRightTextPos = wxPoint(width - rside - gap, height - gap - rtxtHeight);
 
@@ -1350,33 +1466,37 @@ void MeterPanel::HandleLayout(wxDC &dc)
       mSliderPos = wxPoint{ 0, top - gap };
       mSliderSize = wxSize{ width, height + 2 * gap };
 
-      // barw is half of the canvas while allowing for a gap between meters
-      barw = (width - gap) / 2;
-
-      // barh is now the height of the canvas
+      // bitswype fork: divide canvas into mNumBars vertical strips
+      // separated by gaps.  Each bar runs vertically.
+      const unsigned n = std::max(1u, mNumBars);
+      const int totalGap = static_cast<int>(n - 1) * gap;
+      barw = (width - totalGap) / static_cast<int>(n);
       barh = height;
+      for (unsigned i = 0; i < n; ++i) {
+         const int bx = left + static_cast<int>(i) * (barw + gap);
+         mBar[i].b = wxRect(bx, top, barw, barh);
+         SetBarAndClip(i, true);
+      }
+      // Numeric labels for >2: centre under each bar.
+      if (mNumBars != 2) {
+         for (unsigned i = 0; i < n; ++i) {
+            wxSize sz;
+            dc.GetTextExtent(mChannelLabels[i], &sz.x, &sz.y);
+            mChannelLabelPos[i] = wxPoint(
+               mBar[i].b.GetLeft() +
+                  ((mBar[i].b.GetWidth() - sz.GetWidth()) / 2),
+               mBar[i].b.GetBottom() - sz.GetHeight() - gap);
+         }
+      }
 
-      // We always have 2 bars
-      mNumBars = 2;
-
-      // Save dimensions of the left bevel
-      mBar[0].b = wxRect(left, top, barw, barh);
-
-      // Save dimensions of the right bevel
-      mBar[1].b = mBar[0].b;
-      mBar[1].b.SetLeft(mBar[0].b.GetRight() + 1 + gap); // +1 for right edge
-
-      // Set bar and clipping indicator dimensions
-      SetBarAndClip(0, true);
-      SetBarAndClip(1, true);
-
-      mRuler.SetBounds(mBar[1].r.GetRight() + 1,   // +1 for the bevel
-                       mBar[1].r.GetTop(),
+      mRuler.SetBounds(mBar[n - 1].r.GetRight() + 1,
+                       mBar[n - 1].r.GetTop(),
                        mWidth,
-                       mBar[1].r.GetBottom());
-      mRuler.OfflimitsPixels(mRightTextPos.y - gap, mBar[1].r.GetBottom());
+                       mBar[n - 1].r.GetBottom());
+      mRuler.OfflimitsPixels(mRightTextPos.y - gap, mBar[n - 1].r.GetBottom());
       break;
-   case VerticalCompact:
+   }
+   case VerticalCompact: {
       // Ensure there's a margin between top edge of window and the meters
       top = gap;
 
@@ -1386,37 +1506,47 @@ void MeterPanel::HandleLayout(wxDC &dc)
       mSliderPos = wxPoint{ 0, top - gap };
       mSliderSize = wxSize{ width, height + 2 * gap };
 
-      // barw is half of the canvas while allowing for a gap between meters
-      barw = (width / 2) - gap;
-
-      // barh is now the height of the canvas
+      // bitswype fork: divide into mNumBars columns.
+      const unsigned n = std::max(1u, mNumBars);
+      const int totalGap = static_cast<int>(n - 1) * gap;
+      barw = (width - totalGap) / static_cast<int>(n) - gap;
+      if (barw < 1) barw = 1;
       barh = height;
+      for (unsigned i = 0; i < n; ++i) {
+         const int bx = left + static_cast<int>(i) * (barw + gap);
+         mBar[i].b = wxRect(bx, top, barw, barh);
+         SetBarAndClip(i, true);
+      }
 
-      // We always have 2 bars
-      mNumBars = 2;
+      // Centre label under each bar.  For stereo the labels are
+      // L/R (kept for backward-compat); for >2 they're numeric.
+      if (mNumBars == 2) {
+         mLeftTextPos = wxPoint(mBar[0].b.GetLeft() +
+            ((mBar[0].b.GetWidth() - ltxtWidth) / 2), top + barh + gap);
+         mRightTextPos = wxPoint(mBar[1].b.GetLeft() +
+            ((mBar[1].b.GetWidth() - rtxtWidth) / 2), top + barh + gap);
+      } else {
+         for (unsigned i = 0; i < n; ++i) {
+            wxSize sz;
+            dc.GetTextExtent(mChannelLabels[i], &sz.x, &sz.y);
+            mChannelLabelPos[i] = wxPoint(
+               mBar[i].b.GetLeft() +
+                  ((mBar[i].b.GetWidth() - sz.GetWidth()) / 2),
+               top + barh + gap);
+         }
+      }
 
-      // Save dimensions of the left bevel
-      mBar[0].b = wxRect(left, top, barw, barh);
-
-      // Save dimensions of the right bevel
-      mBar[1].b = mBar[0].b;
-      mBar[1].b.SetLeft(mBar[0].b.GetRight() + 1 + gap); // +1 for right edge
-
-      // Set bar and clipping indicator dimensions
-      SetBarAndClip(0, true);
-      SetBarAndClip(1, true);
-
-      // L/R is centered horizontally under each bar
-      mLeftTextPos = wxPoint(mBar[0].b.GetLeft() + ((mBar[0].b.GetWidth() - ltxtWidth) / 2), top + barh + gap);
-      mRightTextPos = wxPoint(mBar[1].b.GetLeft() + ((mBar[1].b.GetWidth() - rtxtWidth) / 2), top + barh + gap);
-
-      mRuler.SetBounds((mWidth - mRulerWidth) / 2,
-                       mBar[1].r.GetTop(),
-                       (mWidth - mRulerWidth) / 2,
-                       mBar[1].r.GetBottom());
+      {
+         const unsigned last = std::max(1u, mNumBars) - 1u;
+         mRuler.SetBounds((mWidth - mRulerWidth) / 2,
+                          mBar[last].r.GetTop(),
+                          (mWidth - mRulerWidth) / 2,
+                          mBar[last].r.GetBottom());
+      }
       mRuler.OfflimitsPixels(0, 0);
       break;
-   case Horizontal:
+   }
+   case Horizontal: {
       // Button right next to dragger.
       left = 0;
 
@@ -1428,7 +1558,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
       // Make sure there's room for icon and gap between the bottom of the meter and icon
       height -= rtxtHeight + gap;
 
-      // L/R is centered vertically and to the left of a each bar
+      // L/R is centered vertically and to the left of each bar
       mLeftTextPos = wxPoint(left, (height / 4) - ltxtHeight / 2);
       mRightTextPos = wxPoint(left, (height * 3 / 4) - rtxtHeight / 2);
 
@@ -1445,35 +1575,40 @@ void MeterPanel::HandleLayout(wxDC &dc)
 
       mSliderSize = wxSize{ width + 2 * gap, height };
 
-      // barw is now the width of the canvas minus gap between canvas and right window edge
-      barw = width - gap;
-
-      // barh is half of the canvas while allowing for a gap between meters
-      barh = (height - gap) / 2;
-
-      // We always have 2 bars
-      mNumBars = 2;
-
-      // Save dimensions of the top bevel
-      mBar[0].b = wxRect(left, top, barw, barh);
-
-      // Save dimensions of the bottom bevel
-      mBar[1].b = mBar[0].b;
-      mBar[1].b.SetTop(mBar[0].b.GetBottom() + 1 + gap); // +1 for bottom edge
-
-      // Set bar and clipping indicator dimensions
-      SetBarAndClip(0, false);
-      SetBarAndClip(1, false);
-
-      mRuler.SetBounds(mBar[1].r.GetLeft(),
-                       mBar[1].r.GetBottom() + 1, // +1 to fit below bevel
-                       mBar[1].r.GetRight(),
-                       mHeight - mBar[1].r.GetBottom() + 1);
+      // bitswype fork: divide canvas into mNumBars horizontal strips
+      // separated by gaps.  Each bar runs horizontally.
+      {
+         const unsigned n = std::max(1u, mNumBars);
+         const int totalGap = static_cast<int>(n - 1) * gap;
+         barw = width - gap;
+         barh = (height - totalGap) / static_cast<int>(n);
+         for (unsigned i = 0; i < n; ++i) {
+            const int by = top + static_cast<int>(i) * (barh + gap);
+            mBar[i].b = wxRect(left, by, barw, barh);
+            SetBarAndClip(i, false);
+         }
+         // Numeric labels for >2: centred vertically left of each bar.
+         if (mNumBars != 2) {
+            for (unsigned i = 0; i < n; ++i) {
+               wxSize sz;
+               dc.GetTextExtent(mChannelLabels[i], &sz.x, &sz.y);
+               mChannelLabelPos[i] = wxPoint(
+                  std::max(0, left - sz.GetWidth() - gap),
+                  mBar[i].b.GetTop() +
+                     ((mBar[i].b.GetHeight() - sz.GetHeight()) / 2));
+            }
+         }
+         mRuler.SetBounds(mBar[n - 1].r.GetLeft(),
+                          mBar[n - 1].r.GetBottom() + 1,
+                          mBar[n - 1].r.GetRight(),
+                          mHeight - mBar[n - 1].r.GetBottom() + 1);
+      }
       break;
-   case HorizontalCompact:
+   }
+   case HorizontalCompact: {
       left = gap;
 
-      // L/R is centered vertically and to the left of a each bar
+      // L/R is centered vertically and to the left of each bar
       mLeftTextPos = wxPoint(left, (height / 4) - (ltxtHeight / 2));
       mRightTextPos = wxPoint(left, (height * 3 / 4) - (ltxtHeight / 2));
 
@@ -1490,37 +1625,44 @@ void MeterPanel::HandleLayout(wxDC &dc)
 
       mSliderSize = wxSize{ width + 2 * gap, height };
 
-      // barw is now the width of the canvas minus gap between canvas and window edge
-      barw = width - gap;
+      // bitswype fork: divide canvas into mNumBars horizontal strips.
+      // The last bar stretches to the bottom edge so a small height
+      // mismatch between window and meter doesn't show as a gap.
+      {
+         const unsigned n = std::max(1u, mNumBars);
+         const int totalGap = static_cast<int>(n - 1) * gap;
+         barw = width - gap;
+         barh = (height - totalGap) / static_cast<int>(n);
+         for (unsigned i = 0; i < n; ++i) {
+            const int by = top + static_cast<int>(i) * (barh + gap);
+            mBar[i].b = wxRect(left, by, barw, barh);
+            SetBarAndClip(i, false);
+         }
+         // Stretch the last bar to fill any leftover height.
+         mBar[n - 1].b.SetHeight(mHeight - mBar[n - 1].b.GetTop() - 1);
+         // Re-derive r/rClip after height tweak.
+         SetBarAndClip(n - 1, false);
 
-      // barh is half of the canvas while allowing for a gap between meters
-      barh = (height - gap) / 2;
+         if (mNumBars != 2) {
+            for (unsigned i = 0; i < n; ++i) {
+               wxSize sz;
+               dc.GetTextExtent(mChannelLabels[i], &sz.x, &sz.y);
+               mChannelLabelPos[i] = wxPoint(
+                  std::max(0, left - sz.GetWidth() - gap),
+                  mBar[i].b.GetTop() +
+                     ((mBar[i].b.GetHeight() - sz.GetHeight()) / 2));
+            }
+         }
 
-      // We always have 2 bars
-      mNumBars = 2;
-
-      // Save dimensions of the top bevel
-      mBar[0].b = wxRect(left, top, barw, barh);
-
-      // Save dimensions of the bottom bevel
-      // Since the bars butt up against the window's top and bottom edges, we need
-      // to include an extra pixel in the bottom bar when the window height and
-      // meter height do not exactly match.
-      mBar[1].b = mBar[0].b;
-      mBar[1].b.SetTop(mBar[0].b.GetBottom() + 1 + gap); // +1 for bottom bevel
-      mBar[1].b.SetHeight(mHeight - mBar[1].b.GetTop() - 1); // +1 for bottom bevel
-
-      // Add clipping indicators - do after setting bar/bevel dimensions above
-      SetBarAndClip(0, false);
-      SetBarAndClip(1, false);
-
-      mRuler.SetBounds(mBar[1].r.GetLeft(),
-                       mBar[1].b.GetTop() - (mRulerHeight / 2),
-                       mBar[1].r.GetRight(),
-                       mBar[1].b.GetTop() - (mRulerHeight / 2));
+         mRuler.SetBounds(mBar[n - 1].r.GetLeft(),
+                          mBar[n - 1].b.GetTop() - (mRulerHeight / 2),
+                          mBar[n - 1].r.GetRight(),
+                          mBar[n - 1].b.GetTop() - (mRulerHeight / 2));
+      }
       mRuler.OfflimitsPixels(0, 0);
       break;
    }
+   } // end switch (mStyle)
 
    mLayoutValid = true;
 }

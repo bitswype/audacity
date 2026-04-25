@@ -72,6 +72,12 @@ struct MeterPanelBase::Forwarder : Meter
          return 0.0;
    }
 
+   void SetNumChannels(unsigned numChannels) override
+   {
+      if (mOwner)
+         mOwner->SetNumChannels(numChannels);
+   }
+
    const wxWeakRef< MeterPanelBase > mOwner;
 };
 
