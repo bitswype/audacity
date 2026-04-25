@@ -153,6 +153,107 @@ TEST_CASE("PlaybackOutputMask: hasBitsAboveDeviceWidth",
    CHECK_FALSE(m.hasBitsAboveDeviceWidth(128));
 }
 
+TEST_CASE("ComputeRoutingDialogColumnCount: empty inputs",
+   "[PlaybackOutputMask]")
+{
+   // No tracks: column count is just max(2, device).
+   CHECK(ComputeRoutingDialogColumnCount(2, {}, {}) == 2u);
+   CHECK(ComputeRoutingDialogColumnCount(0, {}, {}) == 2u);
+   CHECK(ComputeRoutingDialogColumnCount(1, {}, {}) == 2u);
+   CHECK(ComputeRoutingDialogColumnCount(8, {}, {}) == 8u);
+}
+
+TEST_CASE(
+   "ComputeRoutingDialogColumnCount: device dominates when masks are small",
+   "[PlaybackOutputMask]")
+{
+   PlaybackOutputMask m;
+   m.set(0);
+   m.set(1);
+   CHECK(ComputeRoutingDialogColumnCount(8, { m }, { 1 }) == 8u);
+}
+
+TEST_CASE(
+   "ComputeRoutingDialogColumnCount: max set bit dominates when above device",
+   "[PlaybackOutputMask]")
+{
+   PlaybackOutputMask m;
+   m.set(15);
+   // Device has 2 channels, mask references channel 15 -> need 16 cols.
+   CHECK(ComputeRoutingDialogColumnCount(2, { m }, { 1 }) == 16u);
+
+   PlaybackOutputMask hi;
+   hi.set(70);
+   CHECK(ComputeRoutingDialogColumnCount(2, { hi }, { 1 }) == 71u);
+   CHECK(ComputeRoutingDialogColumnCount(2, { hi }, { 1 }) > 64u);
+}
+
+TEST_CASE(
+   "ComputeRoutingDialogColumnCount: identity headroom for every row",
+   "[PlaybackOutputMask]")
+{
+   // 10 mono tracks with empty masks need at least 10 columns so that
+   // Reset on row 9 can assign identity at bit 9.
+   std::vector<PlaybackOutputMask> masks(10);
+   std::vector<unsigned> chans(10, 1);
+   CHECK(ComputeRoutingDialogColumnCount(2, masks, chans) == 10u);
+
+   // Row 5 with stereo channel count needs through bit 6.
+   masks.clear();
+   chans = { 1, 1, 1, 1, 1, 2 };
+   masks.resize(chans.size());
+   CHECK(ComputeRoutingDialogColumnCount(2, masks, chans) == 7u);
+}
+
+TEST_CASE(
+   "ComputeRoutingDialogColumnCount: capped at kPlaybackOutputMaskBits",
+   "[PlaybackOutputMask]")
+{
+   // Even if device > 128 (which the dialog itself caps), the helper
+   // should not allow a column count beyond the mask width.
+   CHECK(
+      ComputeRoutingDialogColumnCount(1000, {}, {}) ==
+      kPlaybackOutputMaskBits);
+
+   PlaybackOutputMask m;
+   m.set(127);
+   CHECK(
+      ComputeRoutingDialogColumnCount(2, { m }, { 1 }) ==
+      kPlaybackOutputMaskBits);
+
+   // Identity headroom request that would exceed the cap clamps too.
+   std::vector<PlaybackOutputMask> masks(200);
+   std::vector<unsigned> chans(200, 1);
+   CHECK(
+      ComputeRoutingDialogColumnCount(2, masks, chans) ==
+      kPlaybackOutputMaskBits);
+}
+
+TEST_CASE(
+   "ComputeRoutingDialogColumnCount: zero-channel rows are skipped",
+   "[PlaybackOutputMask]")
+{
+   // A track with NChannels==0 contributes nothing to the identity
+   // headroom (bug guard: it must not push the count to an absurd
+   // value via row+0).
+   std::vector<PlaybackOutputMask> masks(5);
+   std::vector<unsigned> chans = { 1, 1, 0, 1, 1 };
+   CHECK(ComputeRoutingDialogColumnCount(2, masks, chans) == 5u);
+}
+
+TEST_CASE("CountTracksWithBitsAboveDeviceWidth: basic counts",
+   "[PlaybackOutputMask]")
+{
+   PlaybackOutputMask a, b, c;
+   a.set(0); a.set(1);   // within 2-channel device
+   b.set(10);             // beyond 2-channel device
+   c.set(70);             // beyond 64-channel device
+   CHECK(CountTracksWithBitsAboveDeviceWidth(2, { a, b, c }) == 2u);
+   CHECK(CountTracksWithBitsAboveDeviceWidth(11, { a, b, c }) == 1u);
+   CHECK(CountTracksWithBitsAboveDeviceWidth(71, { a, b, c }) == 0u);
+   CHECK(CountTracksWithBitsAboveDeviceWidth(2, {}) == 0u);
+}
+
 TEST_CASE("PlaybackOutputMask: equality", "[PlaybackOutputMask]")
 {
    PlaybackOutputMask a;

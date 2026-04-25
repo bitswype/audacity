@@ -89,6 +89,13 @@ private:
    void SyncHeaderAndLabelPositions();
 
    AudacityProject &mProject;
+   //! Number of physical device output channels (used for marking
+   //! "off-device" columns and for the status footer).
+   size_t mNumDeviceChannels = 0;
+   //! Number of columns the dialog actually renders.  >= device count
+   //! when any track's mask has bits past the device width, so those
+   //! bits remain visible / clearable.  Computed by
+   //! ComputeRoutingDialogColumnCount.
    size_t mNumOutputChannels = 0;
    std::vector<TrackRow> mRows;
 

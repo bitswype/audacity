@@ -76,7 +76,7 @@ PlaybackRoutingDialog::PlaybackRoutingDialog(
       requested = 1;
    if (requested > static_cast<int>(kMaxDisplayChannels))
       requested = static_cast<int>(kMaxDisplayChannels);
-   mNumOutputChannels = static_cast<size_t>(requested);
+   mNumDeviceChannels = static_cast<size_t>(requested);
 
    // Seed rows up front so BuildUI and ComputeInitialSize both see
    // the track list.
@@ -87,6 +87,24 @@ PlaybackRoutingDialog::PlaybackRoutingDialog(
       row.originalStoredMask = pTrack->GetPlaybackOutputMask();
       mRows.push_back(std::move(row));
    }
+
+   // Choose how many columns to render.  At minimum the device
+   // width, but we extend the visible range to cover any track
+   // mask bits beyond it (so the user can see and clear them) and
+   // to leave room for Reset to assign identity routing on the
+   // last row.  See ComputeRoutingDialogColumnCount.
+   std::vector<PlaybackOutputMask> masks;
+   std::vector<unsigned> chans;
+   masks.reserve(mRows.size());
+   chans.reserve(mRows.size());
+   for (const auto &row : mRows) {
+      masks.push_back(row.originalStoredMask);
+      chans.push_back(row.track
+         ? static_cast<unsigned>(row.track->NChannels())
+         : 0u);
+   }
+   mNumOutputChannels = ComputeRoutingDialogColumnCount(
+      static_cast<unsigned>(mNumDeviceChannels), masks, chans);
 
    SetClientSize(ComputeInitialSize());
    BuildUI(focusedTrack);
@@ -136,6 +154,30 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          .Translation());
    outer->Add(header, 0, wxEXPAND | wxALL, 8);
 
+   // If any tracks reference channels beyond the current playback
+   // device, surface that explicitly so the user knows why some
+   // columns are marked with an asterisk.
+   {
+      std::vector<PlaybackOutputMask> masks;
+      masks.reserve(mRows.size());
+      for (const auto &row : mRows)
+         masks.push_back(row.originalStoredMask);
+      const auto offCount = CountTracksWithBitsAboveDeviceWidth(
+         static_cast<unsigned>(mNumDeviceChannels), masks);
+      if (offCount > 0) {
+         auto *notice = new wxStaticText(this, wxID_ANY,
+            wxString::Format(
+               _("Note: %u track(s) route to channels beyond your "
+                 "%zu-channel playback device.  Off-device columns "
+                 "are marked with * and will be silent until you "
+                 "switch to a device with more outputs."),
+               offCount, mNumDeviceChannels));
+         notice->SetForegroundColour(
+            wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+         outer->Add(notice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
+      }
+   }
+
    // ----------------- 4-region scroll-synced layout -----------------
    //
    // +---------+--------------------+---+
@@ -177,11 +219,27 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
       wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
    mHeaderPanel->SetMinSize(wxSize(-1, mHeaderRowHeight));
    for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
-      auto *label = new wxStaticText(mHeaderPanel, wxID_ANY,
-         wxString::Format("%zu", ch + 1),
+      // Off-device columns get an asterisk suffix and italic font so
+      // they are visually distinct from the device-routable columns.
+      const bool offDevice = ch >= mNumDeviceChannels;
+      const wxString text = offDevice
+         ? wxString::Format("%zu*", ch + 1)
+         : wxString::Format("%zu", ch + 1);
+      auto *label = new wxStaticText(mHeaderPanel, wxID_ANY, text,
          wxPoint(static_cast<int>(ch) * mColumnWidth, 0),
          wxSize(mColumnWidth, mHeaderRowHeight),
          wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL);
+      if (offDevice) {
+         auto font = label->GetFont();
+         font.SetStyle(wxFONTSTYLE_ITALIC);
+         label->SetFont(font);
+         label->SetForegroundColour(
+            wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+         label->SetToolTip(
+            _("This channel is beyond the current playback device's "
+              "output count.  The routing is preserved but will not "
+              "produce audio until the device exposes more channels."));
+      }
       mHeaderLabels.push_back(label);
    }
 
@@ -404,9 +462,17 @@ void PlaybackRoutingDialog::UpdateStatus(int rowIndex, int colIndex)
    }
    const auto &row = mRows[rowIndex];
    const wxString name = row.track ? row.track->GetName() : wxString{};
-   mStatusText->SetLabel(wxString::Format(
-      _("Track %d ('%s'), output %d"),
-      rowIndex + 1, name, colIndex + 1));
+   const bool offDevice =
+      static_cast<size_t>(colIndex) >= mNumDeviceChannels;
+   if (offDevice)
+      mStatusText->SetLabel(wxString::Format(
+         _("Track %d ('%s'), output %d (beyond device's "
+           "%zu channels -- silent)"),
+         rowIndex + 1, name, colIndex + 1, mNumDeviceChannels));
+   else
+      mStatusText->SetLabel(wxString::Format(
+         _("Track %d ('%s'), output %d"),
+         rowIndex + 1, name, colIndex + 1));
 }
 
 void PlaybackRoutingDialog::OnResetRow(int rowIndex)
@@ -422,21 +488,17 @@ void PlaybackRoutingDialog::OnResetRow(int rowIndex)
 
 int PlaybackRoutingDialog::ApplyIntents()
 {
+   // Every set bit on the track is visible as a checkbox: the dialog
+   // expands its column range to cover bits beyond the device width
+   // (see ComputeRoutingDialogColumnCount).  So the new mask is just
+   // whatever the visible checkboxes say -- no invisible-bit
+   // preservation needed.
    int changed = 0;
    for (auto &row : mRows) {
       if (!row.track)
          continue;
-      // Preserve any bits set above the device width -- the user
-      // cannot see them, but we don't want to silently clear them.
-      auto newMask = row.originalStoredMask;
-      for (size_t ch = 0; ch < mNumOutputChannels &&
-                           ch < kMaxDisplayChannels; ++ch)
-         newMask.clear(static_cast<unsigned>(ch));
-      const auto visibleMask =
+      const auto newMask =
          MaskFromCheckboxes(row.checks, mNumOutputChannels);
-      newMask.lo |= visibleMask.lo;
-      newMask.hi |= visibleMask.hi;
-
       if (newMask != row.originalStoredMask) {
          row.track->SetPlaybackOutputMask(newMask);
          row.originalStoredMask = newMask;

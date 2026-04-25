@@ -7,6 +7,8 @@
 *******************************************************************/
 #include "PlaybackOutputMask.h"
 
+#include <algorithm>
+
 #if defined(__GNUC__) || defined(__clang__)
    #define AU_POPCOUNT64(x) __builtin_popcountll(x)
    #define AU_CLZ64(x)      __builtin_clzll(x)
@@ -103,4 +105,58 @@ void AtomicPlaybackOutputMask::Store(PlaybackOutputMask mask) noexcept
    mHi.store(mask.hi, std::memory_order_relaxed);
    // Release on the trailing seq store publishes lo/hi to readers.
    mSeq.store(s + 2, std::memory_order_release);
+}
+
+namespace
+{
+//! Highest set bit + 1 across all masks; 0 if none have any bits set.
+unsigned MaxSetBitPlusOne(
+   const std::vector<PlaybackOutputMask>& masks)
+{
+   unsigned highest = 0;
+   for (const auto& m : masks) {
+      if (m.hi != 0)
+         highest = std::max(highest,
+            64u + 64u - static_cast<unsigned>(AU_CLZ64(m.hi)));
+      else if (m.lo != 0)
+         highest = std::max(highest,
+            64u - static_cast<unsigned>(AU_CLZ64(m.lo)));
+   }
+   return highest;
+}
+} // namespace
+
+unsigned ComputeRoutingDialogColumnCount(
+   unsigned deviceChannels,
+   const std::vector<PlaybackOutputMask>& trackMasks,
+   const std::vector<unsigned>& trackChannelCounts)
+{
+   unsigned columns = std::max(2u, deviceChannels);
+   columns = std::max(columns, MaxSetBitPlusOne(trackMasks));
+
+   // Every row r with channel count c must be Reset-able: identity
+   // routing for it sets bits r..r+c-1, so the dialog needs at least
+   // r+c columns to expose those bits.
+   const auto rowCount = std::min(
+      trackMasks.size(), trackChannelCounts.size());
+   for (size_t r = 0; r < rowCount; ++r) {
+      const auto c = trackChannelCounts[r];
+      if (c == 0)
+         continue;
+      const auto need = static_cast<unsigned>(r) + c;
+      columns = std::max(columns, need);
+   }
+   return std::min(columns, kPlaybackOutputMaskBits);
+}
+
+unsigned CountTracksWithBitsAboveDeviceWidth(
+   unsigned deviceChannels,
+   const std::vector<PlaybackOutputMask>& trackMasks)
+{
+   unsigned count = 0;
+   for (const auto& m : trackMasks) {
+      if (m.hasBitsAboveDeviceWidth(deviceChannels))
+         ++count;
+   }
+   return count;
 }

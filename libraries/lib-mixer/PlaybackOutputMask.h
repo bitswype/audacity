@@ -27,6 +27,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <vector>
 
 //! 128-bit per-track playback output channel mask.
 //!
@@ -104,6 +105,35 @@ struct MIXER_API PlaybackOutputMask
 
 //! Maximum number of output channels representable by a PlaybackOutputMask.
 constexpr unsigned kPlaybackOutputMaskBits = 128;
+
+//! Choose how many columns the routing matrix dialog should show.
+//!
+//! Returns the smallest column count that simultaneously:
+//!   - Includes every device output channel (so identity-routing is
+//!     always editable for the current device).
+//!   - Includes every bit set in any of @p trackMasks (so off-device
+//!     bits stored on tracks remain visible / clearable instead of
+//!     silently dropping out of the user's reach).
+//!   - Has room for an identity-Reset of every row (each row r with
+//!     channel count c needs at least r + c columns).
+//!
+//! Capped at kPlaybackOutputMaskBits.  Always at least 2 to avoid an
+//! awkward 1-column dialog on a mono device with no tracks.
+//!
+//! @p trackChannelCounts must have the same size as @p trackMasks.
+MIXER_API
+unsigned ComputeRoutingDialogColumnCount(
+   unsigned deviceChannels,
+   const std::vector<PlaybackOutputMask>& trackMasks,
+   const std::vector<unsigned>& trackChannelCounts);
+
+//! Count tracks whose mask has any bit set at index >= @p deviceChannels.
+//! Used to surface a project-load notice when the user opens a project
+//! whose routing references channels their current device cannot reach.
+MIXER_API
+unsigned CountTracksWithBitsAboveDeviceWidth(
+   unsigned deviceChannels,
+   const std::vector<PlaybackOutputMask>& trackMasks);
 
 //! Single-writer / multi-reader atomic accessor for PlaybackOutputMask.
 //!
