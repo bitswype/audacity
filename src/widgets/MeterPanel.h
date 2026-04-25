@@ -95,12 +95,12 @@ class AUDACITY_DLL_API MeterPanel final
    // These should be kept in the same order as they appear
    // in the menu
    enum Style {
-      AutomaticStereo,
-      HorizontalStereo,
-      VerticalStereo,
-      MixerTrackCluster, // Doesn't show menu, icon, or L/R labels, but otherwise like VerticalStereo.
-      HorizontalStereoCompact, // Thinner.
-      VerticalStereoCompact, // Narrower.
+      Automatic,
+      Horizontal,
+      Vertical,
+      MixerTrackCluster, // Doesn't show menu, icon, or L/R labels, but otherwise like Vertical.
+      HorizontalCompact, // Thinner.
+      VerticalCompact, // Narrower.
    };
 
 
@@ -109,7 +109,7 @@ class AUDACITY_DLL_API MeterPanel final
          bool isInput,
          const wxPoint& pos = wxDefaultPosition,
          const wxSize& size = wxDefaultSize,
-         Style style = HorizontalStereo,
+         Style style = Horizontal,
          float fDecayRate = 60.0f);
 
    void SetFocusFromKbd() override;
