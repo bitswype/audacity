@@ -1505,10 +1505,20 @@ bool AudioIO::IsAvailable(AudacityProject &project) const
 
 void AudioIO::SetMeters()
 {
-   if (auto pInputMeter = mInputMeter.lock())
+   // bitswype fork: tell each meter how many channels to display
+   // BEFORE the first UpdateDisplay arrives.  This avoids a brief
+   // visual snap on stream start where a many-channel output is
+   // first drawn as stereo and then expands.
+   if (auto pInputMeter = mInputMeter.lock()) {
+      pInputMeter->SetNumChannels(
+         static_cast<unsigned>(mNumCaptureChannels));
       pInputMeter->Reset(mRate, true);
-   if (auto pOutputMeter = mOutputMeter.lock())
+   }
+   if (auto pOutputMeter = mOutputMeter.lock()) {
+      pOutputMeter->SetNumChannels(
+         static_cast<unsigned>(mNumPlaybackChannels));
       pOutputMeter->Reset(mRate, true);
+   }
 }
 
 void AudioIO::StopStream()

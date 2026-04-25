@@ -33,9 +33,20 @@
 class AudacityProject;
 struct AudioIOEvent;
 
-// Increase this when we add support for multichannel meters
-// (most of the code is already there)
-const int kMaxMeterBars = 2;
+//! Maximum number of meter bars a MeterPanel can display.
+//!
+//! Matches the 128-bit playback / recording channel mask width used
+//! by the routing matrix dialogs (kPlaybackOutputMaskBits in
+//! lib-mixer/PlaybackOutputMask.h).  We don't include that header
+//! here because the widget layer doesn't otherwise depend on
+//! lib-mixer; the constant is mirrored manually.
+//!
+//! Memory cost: each MeterUpdateMsg is sized for kMaxMeterBars
+//! channels (~2 KB at 128).  The lock-free queue holds 1024 such
+//! messages, so each MeterPanel instance carries ~2 MB of queue
+//! storage.  With one playback + one recording meter per project,
+//! ~5 MB total.  Acceptable.
+const int kMaxMeterBars = 128;
 
 struct MeterBar {
    bool   vert;
@@ -151,6 +162,14 @@ class AUDACITY_DLL_API MeterPanel final
     */
    void UpdateDisplay(unsigned numChannels,
                       int numFrames, const float *sampleData) override;
+
+   //! bitswype fork: tell the meter how many channels the next
+   //! stream will carry, so the bar count and layout are set up
+   //! before the first UpdateDisplay arrives.  Capped at
+   //! kMaxMeterBars.  MixerTrackCluster style ignores this and stays
+   //! at its track-natural channel count (1 or 2); per-track meters
+   //! are not device-channel meters.
+   void SetNumChannels(unsigned numChannels) override;
 
    // Vaughan, 2010-11-29: This not currently used. See comments in MixerTrackCluster::UpdateMeter().
    //void UpdateDisplay(int numChannels, int numFrames,
@@ -269,8 +288,35 @@ class AUDACITY_DLL_API MeterPanel final
 
    bool      mActive;
 
+   //! Bar count used by GUI-thread code (HandleLayout, OnPaint,
+   //! OnMouse, OnMeterUpdate, etc.).  Single-thread access; plain
+   //! unsigned is fine.
    unsigned  mNumBars;
+   //! Atomic mirror of mNumBars, kept in lockstep by HandleLayout /
+   //! SetNumChannels.  Read by UpdateDisplay (PortAudio callback
+   //! thread) to clamp how many channels of incoming audio it sums
+   //! into the message queue.  Without this, the audio thread would
+   //! be racing the GUI thread's mNumBars writes -- technically UB
+   //! and observable as a one-tick visual glitch when channel count
+   //! changes during playback.
+   std::atomic<unsigned> mNumBarsAudio{ 2 };
+   //! Number of channels the audio stream will deliver, set by
+   //! SetNumChannels.  Drives mNumBars + label layout.  Capped at
+   //! kMaxMeterBars.  Defaults to 2 for backward compatibility with
+   //! callers that never call SetNumChannels (e.g. when a stream
+   //! starts via a code path that pre-dates the multichannel work).
+   unsigned  mDesiredNumChannels{ 2 };
    MeterBar  mBar[kMaxMeterBars]{};
+
+   //! Per-bar label and its draw position.  When mNumBars == 2 the
+   //! labels are "L"/"R" (matching the legacy stereo behaviour); when
+   //! mNumBars > 2 the labels are numeric "1".."N".  Same length as
+   //! mNumBars.  When the bar is too small to fit the label text,
+   //! mShowChannelLabels is false and labels are suppressed
+   //! (the hover tooltip still surfaces the channel number).
+   std::vector<wxString> mChannelLabels;
+   std::vector<wxPoint>  mChannelLabelPos;
+   bool                  mShowChannelLabels{ true };
 
    bool      mLayoutValid;
 

@@ -25,6 +25,15 @@ public:
    virtual float GetMaxPeak() const = 0;
    virtual bool IsClipping() const = 0;
    virtual int GetDBRange() const = 0;
+
+   //! bitswype fork: tell the meter how many channels the audio
+   //! stream will deliver.  AudioIO calls this from StartStream so
+   //! the meter sets up its bar count and layout before the first
+   //! UpdateDisplay arrives, avoiding a stereo-then-multichannel
+   //! visual snap when a many-channel device starts up.
+   //! Default no-op so non-MeterPanel implementations of this
+   //! interface (e.g. test mocks) don't need to care.
+   virtual void SetNumChannels(unsigned /*numChannels*/) {}
 };
 
 #endif

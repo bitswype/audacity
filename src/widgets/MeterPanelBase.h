@@ -44,6 +44,9 @@ public:
    virtual float GetMaxPeak() const = 0;
    virtual bool IsClipping() const = 0;
    virtual int GetDBRange() const = 0;
+   //! bitswype fork: forwarded from Meter::SetNumChannels.  Default
+   //! no-op so subclasses that don't care don't need to override.
+   virtual void SetNumChannels(unsigned /*numChannels*/) {}
 
 private:
    static bool s_AcceptsFocus;
