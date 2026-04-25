@@ -20,6 +20,7 @@
 #include "AudioIOBase.h"        // for AudioIOPlaybackChannels
 #include "PlaybackOutputMask.h"
 #include "Project.h"
+#include "ProjectHistory.h"
 #include "ShuttleGui.h"
 #include "Track.h"
 #include "WaveTrack.h"
@@ -510,6 +511,19 @@ int PlaybackRoutingDialog::ApplyIntents()
 
 void PlaybackRoutingDialog::OnClose(wxCommandEvent &)
 {
-   ApplyIntents();
+   const int changed = ApplyIntents();
+   // Routing changes are user-visible structural state -- push a
+   // single undo step covering all rows the dialog modified, so
+   // Ctrl+Z reverts the whole batch.  The full project state
+   // (including each WaveTrack's mask attachment) is snapshotted
+   // by UndoManager, so undo restores the prior masks even though
+   // we hold no explicit before/after vector here.
+   if (changed > 0) {
+      ProjectHistory::Get(mProject).PushState(
+         (changed == 1)
+            ? XO("Changed playback routing for 1 track")
+            : XO("Changed playback routing for %d tracks").Format(changed),
+         XO("Routing"));
+   }
    EndModal(wxID_OK);
 }
