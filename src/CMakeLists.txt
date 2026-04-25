@@ -640,6 +640,8 @@ set( SOURCES
       toolbars/PlaybackRoutingDialog.h
       toolbars/RecordingRoutingDialog.cpp
       toolbars/RecordingRoutingDialog.h
+      toolbars/ChannelTestToneDialog.cpp
+      toolbars/ChannelTestToneDialog.h
       toolbars/SelectionBar.cpp
       toolbars/SelectionBar.h
       toolbars/SnappingToolBar.cpp

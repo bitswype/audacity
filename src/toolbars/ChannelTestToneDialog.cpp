@@ -1,0 +1,421 @@
+/**********************************************************************
+
+  Audacity: A Digital Audio Editor
+
+  ChannelTestToneDialog.cpp
+
+**********************************************************************/
+
+#include "ChannelTestToneDialog.h"
+
+#include <wx/button.h>
+#include <wx/checkbox.h>
+#include <wx/choice.h>
+#include <wx/dcclient.h>
+#include <wx/radiobut.h>
+#include <wx/scrolwin.h>
+#include <wx/settings.h>
+#include <wx/sizer.h>
+#include <wx/slider.h>
+#include <wx/stattext.h>
+#include <wx/textctrl.h>
+#include <wx/timer.h>
+#include <wx/valnum.h>
+
+#include "AudioIO.h"
+#include "AudioIOBase.h"
+#include "Project.h"
+#include "ProjectAudioIO.h"
+#include "ProjectRate.h"
+
+#include <algorithm>
+#include <cstdlib>
+
+namespace {
+constexpr size_t kMaxDisplayChannels = kPlaybackOutputMaskBits;
+//! Columns in the channel checkbox grid.  16 fits the typical
+//! routing-matrix width on a 1280-wide display; the dialog scrolls
+//! vertically when more channels are present (up to 128).
+constexpr int kGridColumns = 16;
+//! Slider in dB tens-of-a-dB so we can step in 0.1 dB.  Range
+//! corresponds to -120 dBFS .. 0 dBFS.  The numeric text field
+//! accepts values outside this range too.
+constexpr int kSliderMinTenths = -1200;
+constexpr int kSliderMaxTenths = 0;
+
+double ParseDouble(const wxString& s, double fallback)
+{
+   double v = 0.0;
+   if (!s.ToDouble(&v))
+      return fallback;
+   return v;
+}
+} // namespace
+
+enum {
+   kPlayId = 1000,
+   kStopId,
+   kSelectAllId,
+   kClearId,
+   kFreqTextId,
+   kLevelTextId,
+   kLevelSliderId,
+   kToneTypeId,
+   kModeDirectId,
+   kModeMatrixId,
+   kPollTimerId,
+};
+
+BEGIN_EVENT_TABLE(ChannelTestToneDialog, wxDialogWrapper)
+   EVT_BUTTON(kPlayId, ChannelTestToneDialog::OnPlay)
+   EVT_BUTTON(kStopId, ChannelTestToneDialog::OnStop)
+   EVT_BUTTON(kSelectAllId, ChannelTestToneDialog::OnSelectAll)
+   EVT_BUTTON(kClearId, ChannelTestToneDialog::OnClear)
+   EVT_BUTTON(wxID_CLOSE, ChannelTestToneDialog::OnCloseButton)
+   EVT_CLOSE(ChannelTestToneDialog::OnClose)
+   EVT_TEXT(kFreqTextId, ChannelTestToneDialog::OnFrequencyText)
+   EVT_TEXT(kLevelTextId, ChannelTestToneDialog::OnLevelText)
+   EVT_SLIDER(kLevelSliderId, ChannelTestToneDialog::OnLevelSlider)
+   EVT_CHOICE(kToneTypeId, ChannelTestToneDialog::OnToneType)
+   EVT_RADIOBUTTON(kModeDirectId, ChannelTestToneDialog::OnMode)
+   EVT_RADIOBUTTON(kModeMatrixId, ChannelTestToneDialog::OnMode)
+   EVT_TIMER(kPollTimerId, ChannelTestToneDialog::OnPollTimer)
+END_EVENT_TABLE()
+
+ChannelTestToneDialog::ChannelTestToneDialog(
+   wxWindow* parent, AudacityProject& project)
+   : wxDialogWrapper(parent, wxID_ANY,
+                     XO("Channel Test Tone"),
+                     wxDefaultPosition, wxDefaultSize,
+                     wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+   , mProject(project)
+{
+   SetName();
+
+   const auto requested = AudioIOPlaybackChannels.ReadWithDefault(2);
+   mNumDeviceChannels = static_cast<size_t>(
+      std::clamp<int>(requested, 1,
+         static_cast<int>(kMaxDisplayChannels)));
+
+   BuildUI();
+
+   mPollTimer = std::make_unique<wxTimer>(this, kPollTimerId);
+   mPollTimer->Start(250, wxTIMER_CONTINUOUS);
+
+   RefreshControlState();
+}
+
+ChannelTestToneDialog::~ChannelTestToneDialog()
+{
+   if (mPollTimer)
+      mPollTimer->Stop();
+   // If the dialog is destroyed while a tone is playing, stop it.
+   auto* gAudioIO = AudioIO::Get();
+   if (gAudioIO && gAudioIO->IsTestToneActive())
+      gAudioIO->StopTestTone();
+}
+
+void ChannelTestToneDialog::BuildUI()
+{
+   auto* outer = new wxBoxSizer(wxVERTICAL);
+
+   // Mode radio buttons
+   {
+      auto* box = new wxStaticBoxSizer(wxVERTICAL, this, _("Test mode"));
+      mDirectRadio = new wxRadioButton(this, kModeDirectId,
+         _("Direct hardware test  (bypasses routing matrix)"),
+         wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
+      mMatrixRadio = new wxRadioButton(this, kModeMatrixId,
+         _("Routing matrix test  (runs through RouteTrackSamples)"));
+      mDirectRadio->SetValue(true);
+      box->Add(mDirectRadio, 0, wxALL, 4);
+      box->Add(mMatrixRadio, 0, wxALL, 4);
+      outer->Add(box, 0, wxALL | wxEXPAND, 6);
+   }
+
+   // Tone type + frequency
+   {
+      auto* row = new wxBoxSizer(wxHORIZONTAL);
+      row->Add(new wxStaticText(this, wxID_ANY, _("Tone:")),
+         0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+      wxArrayString toneTypes;
+      toneTypes.Add(_("Sine"));
+      toneTypes.Add(_("Pink noise"));
+      toneTypes.Add(_("White noise"));
+      mToneTypeChoice = new wxChoice(this, kToneTypeId,
+         wxDefaultPosition, wxDefaultSize, toneTypes);
+      mToneTypeChoice->SetSelection(0);
+      row->Add(mToneTypeChoice, 0, wxRIGHT, 12);
+
+      row->Add(new wxStaticText(this, wxID_ANY, _("Frequency:")),
+         0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+      mFreqText = new wxTextCtrl(this, kFreqTextId, wxT("1000.0"),
+         wxDefaultPosition, wxSize(80, -1));
+      row->Add(mFreqText, 0, wxRIGHT, 4);
+      row->Add(new wxStaticText(this, wxID_ANY, _("Hz")),
+         0, wxALIGN_CENTER_VERTICAL);
+      outer->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, 6);
+   }
+
+   // Level
+   {
+      auto* row = new wxBoxSizer(wxHORIZONTAL);
+      row->Add(new wxStaticText(this, wxID_ANY, _("Level:")),
+         0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+      mLevelText = new wxTextCtrl(this, kLevelTextId, wxT("-20.0"),
+         wxDefaultPosition, wxSize(72, -1));
+      row->Add(mLevelText, 0, wxRIGHT, 4);
+      row->Add(new wxStaticText(this, wxID_ANY, _("dBFS")),
+         0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+      mLevelSlider = new wxSlider(this, kLevelSliderId,
+         /*value*/ -200, kSliderMinTenths, kSliderMaxTenths,
+         wxDefaultPosition, wxSize(220, -1));
+      row->Add(mLevelSlider, 1, wxALIGN_CENTER_VERTICAL);
+      outer->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, 6);
+   }
+
+   // Channel grid (scrollable).  Lays out kGridColumns wide; rows
+   // grow to cover all kMaxDisplayChannels.
+   {
+      auto* label = new wxStaticText(this, wxID_ANY,
+         wxString::Format(_("Target output channels (1 - %u, %zu reachable on this device):"),
+            static_cast<unsigned>(kMaxDisplayChannels),
+            mNumDeviceChannels));
+      outer->Add(label, 0, wxLEFT | wxRIGHT, 6);
+
+      mGridScroll = new wxScrolledWindow(this, wxID_ANY,
+         wxDefaultPosition, wxSize(640, 220),
+         wxBORDER_SIMPLE | wxVSCROLL);
+      auto* grid = new wxFlexGridSizer(kGridColumns, 4, 4);
+      mChannelChecks.assign(kMaxDisplayChannels, nullptr);
+      for (size_t i = 0; i < kMaxDisplayChannels; ++i) {
+         const wxString label = wxString::Format(wxT("%zu"), i + 1);
+         auto* cb = new wxCheckBox(mGridScroll, wxID_ANY, label);
+         if (i >= mNumDeviceChannels) {
+            cb->SetForegroundColour(
+               wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+            cb->SetToolTip(
+               _("This channel is past the device's reachable output count; "
+                 "the tone will be silently dropped if selected."));
+         }
+         grid->Add(cb, 0, wxALL, 2);
+         mChannelChecks[i] = cb;
+      }
+      mGridScroll->SetSizer(grid);
+      mGridScroll->FitInside();
+      mGridScroll->SetScrollRate(0, 16);
+      outer->Add(mGridScroll, 1, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, 6);
+   }
+
+   // Select all / clear
+   {
+      auto* row = new wxBoxSizer(wxHORIZONTAL);
+      row->Add(new wxButton(this, kSelectAllId, _("Select &all")),
+         0, wxRIGHT, 4);
+      row->Add(new wxButton(this, kClearId, _("&Clear")),
+         0, wxRIGHT, 4);
+      outer->Add(row, 0, wxLEFT | wxRIGHT | wxBOTTOM, 6);
+   }
+
+   // Status line
+   mStatusText = new wxStaticText(this, wxID_ANY, _("Idle."));
+   outer->Add(mStatusText, 0, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, 6);
+
+   // Bottom buttons
+   {
+      auto* row = new wxBoxSizer(wxHORIZONTAL);
+      row->AddStretchSpacer();
+      mPlayBtn = new wxButton(this, kPlayId, _("&Play"));
+      mStopBtn = new wxButton(this, kStopId, _("&Stop"));
+      row->Add(mPlayBtn, 0, wxRIGHT, 4);
+      row->Add(mStopBtn, 0, wxRIGHT, 12);
+      row->Add(new wxButton(this, wxID_CLOSE, _("Close")), 0);
+      outer->Add(row, 0, wxALL | wxEXPAND, 6);
+   }
+
+   SetSizerAndFit(outer);
+   SetMinSize(wxSize(720, 540));
+}
+
+TestToneRequest ChannelTestToneDialog::MakeRequest() const
+{
+   TestToneRequest r;
+   r.mode = (mMatrixRadio && mMatrixRadio->GetValue())
+      ? TestToneRequest::Mode::ThroughMatrix
+      : TestToneRequest::Mode::DirectHW;
+
+   const int sel = mToneTypeChoice ? mToneTypeChoice->GetSelection() : 0;
+   switch (sel) {
+   case 1: r.toneType = TestToneGenerator::Type::Pink; break;
+   case 2: r.toneType = TestToneGenerator::Type::White; break;
+   default: r.toneType = TestToneGenerator::Type::Sine; break;
+   }
+
+   r.frequencyHz = ParseDouble(
+      mFreqText ? mFreqText->GetValue() : wxT("1000.0"), 1000.0);
+   r.levelDb = ParseDouble(
+      mLevelText ? mLevelText->GetValue() : wxT("-20.0"), -20.0);
+
+   PlaybackOutputMask mask;
+   for (size_t i = 0; i < mChannelChecks.size(); ++i) {
+      if (mChannelChecks[i] && mChannelChecks[i]->GetValue())
+         mask.set(static_cast<unsigned>(i));
+   }
+   r.mask = mask;
+   return r;
+}
+
+void ChannelTestToneDialog::PushParamsIfActive()
+{
+   auto* gAudioIO = AudioIO::Get();
+   if (!gAudioIO || !gAudioIO->IsTestToneActive())
+      return;
+   const auto req = MakeRequest();
+   gAudioIO->UpdateTestTone(req);
+   mLast = req;
+}
+
+void ChannelTestToneDialog::RefreshControlState()
+{
+   auto* gAudioIO = AudioIO::Get();
+   const bool active =
+      gAudioIO ? gAudioIO->IsTestToneActive() : false;
+   const bool busy =
+      gAudioIO ? gAudioIO->IsBusy() : false;
+   if (mPlayBtn)
+      mPlayBtn->Enable(!active && !busy);
+   if (mStopBtn)
+      mStopBtn->Enable(active);
+
+   if (active) {
+      // Build "Playing on channels: 5, 10" up to a sensible truncation.
+      wxString channelsStr;
+      const auto req = MakeRequest();
+      int shown = 0;
+      for (unsigned i = 0; i < kPlaybackOutputMaskBits; ++i) {
+         if (!req.mask.test(i)) continue;
+         if (shown >= 12) {
+            channelsStr += wxT(", ...");
+            break;
+         }
+         if (!channelsStr.empty()) channelsStr += wxT(", ");
+         channelsStr += wxString::Format(wxT("%u"), i + 1);
+         ++shown;
+      }
+      if (channelsStr.empty())
+         mStatusText->SetLabel(_("Playing.  No channels selected -- silent."));
+      else
+         mStatusText->SetLabel(
+            wxString::Format(_("Playing on channels: %s"), channelsStr));
+   } else if (busy) {
+      mStatusText->SetLabel(
+         _("Audio system busy (other playback or recording in progress)."));
+   } else {
+      mStatusText->SetLabel(_("Idle."));
+   }
+}
+
+void ChannelTestToneDialog::OnPlay(wxCommandEvent&)
+{
+   auto* gAudioIO = AudioIO::Get();
+   if (!gAudioIO) return;
+   if (gAudioIO->IsBusy()) {
+      RefreshControlState();
+      return;
+   }
+   const auto req = MakeRequest();
+   AudioIOStartStreamOptions options(
+      mProject.shared_from_this(),
+      ProjectRate::Get(mProject).GetRate());
+   if (!gAudioIO->StartTestTone(req, options)) {
+      mStatusText->SetLabel(_("Failed to open the audio device."));
+      return;
+   }
+   mLast = req;
+   RefreshControlState();
+}
+
+void ChannelTestToneDialog::OnStop(wxCommandEvent&)
+{
+   auto* gAudioIO = AudioIO::Get();
+   if (!gAudioIO) return;
+   gAudioIO->StopTestTone();
+   RefreshControlState();
+}
+
+void ChannelTestToneDialog::OnSelectAll(wxCommandEvent&)
+{
+   for (size_t i = 0; i < mChannelChecks.size() && i < mNumDeviceChannels; ++i)
+      if (mChannelChecks[i])
+         mChannelChecks[i]->SetValue(true);
+   PushParamsIfActive();
+   RefreshControlState();
+}
+
+void ChannelTestToneDialog::OnClear(wxCommandEvent&)
+{
+   for (auto* cb : mChannelChecks)
+      if (cb) cb->SetValue(false);
+   PushParamsIfActive();
+   RefreshControlState();
+}
+
+void ChannelTestToneDialog::OnCloseButton(wxCommandEvent&)
+{
+   Close();
+}
+
+void ChannelTestToneDialog::OnClose(wxCloseEvent& event)
+{
+   auto* gAudioIO = AudioIO::Get();
+   if (gAudioIO && gAudioIO->IsTestToneActive())
+      gAudioIO->StopTestTone();
+   if (mPollTimer) mPollTimer->Stop();
+   event.Skip();
+}
+
+void ChannelTestToneDialog::OnFrequencyText(wxCommandEvent&)
+{
+   PushParamsIfActive();
+}
+
+void ChannelTestToneDialog::OnLevelText(wxCommandEvent&)
+{
+   const double v = ParseDouble(mLevelText->GetValue(), -20.0);
+   if (mLevelSlider) {
+      const int tenths =
+         std::clamp(static_cast<int>(v * 10.0),
+            kSliderMinTenths, kSliderMaxTenths);
+      // Avoid feedback loops -- only push if actually different.
+      if (mLevelSlider->GetValue() != tenths)
+         mLevelSlider->SetValue(tenths);
+   }
+   PushParamsIfActive();
+}
+
+void ChannelTestToneDialog::OnLevelSlider(wxCommandEvent&)
+{
+   const int tenths = mLevelSlider->GetValue();
+   const double v = static_cast<double>(tenths) / 10.0;
+   if (mLevelText) {
+      const wxString newText = wxString::Format(wxT("%.1f"), v);
+      if (mLevelText->GetValue() != newText)
+         mLevelText->ChangeValue(newText);
+   }
+   PushParamsIfActive();
+}
+
+void ChannelTestToneDialog::OnToneType(wxCommandEvent&)
+{
+   PushParamsIfActive();
+}
+
+void ChannelTestToneDialog::OnMode(wxCommandEvent&)
+{
+   PushParamsIfActive();
+}
+
+void ChannelTestToneDialog::OnPollTimer(wxTimerEvent&)
+{
+   RefreshControlState();
+}

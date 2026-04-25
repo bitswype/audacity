@@ -32,6 +32,7 @@
 #include "DeviceManager.h"
 #include "../prefs/PrefsDialog.h"
 #include "../prefs/DevicePrefs.h"
+#include "ChannelTestToneDialog.h"
 #include "PlaybackRoutingDialog.h"
 #include "RecordingRoutingDialog.h"
 #include "../widgets/AButton.h"
@@ -226,6 +227,8 @@ void AudioSetupToolBar::OnAudioSetup(wxCommandEvent& WXUNUSED(evt))
    menu.Append(kPlaybackRouting, _("Playback &Routing Matrix..."));
    //i18n-hint: Opens the bitswype fork's Recording Routing Matrix dialog
    menu.Append(kRecordingRouting, _("Recording R&outing Matrix..."));
+   //i18n-hint: Opens the bitswype fork's Channel Test Tone dialog
+   menu.Append(kChannelTestTone, _("Channel &Test Tone..."));
    menu.Append(kAudioDeviceRescan, _("R&escan Audio Devices"));
    menu.Append(kAudioSettings, _("&Audio Settings..."));
 
@@ -234,6 +237,7 @@ void AudioSetupToolBar::OnAudioSetup(wxCommandEvent& WXUNUSED(evt))
    menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnSettings, this, kAudioSettings);
    menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnPlaybackRouting, this, kPlaybackRouting);
    menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnRecordingRouting, this, kRecordingRouting);
+   menu.Bind(wxEVT_MENU, &AudioSetupToolBar::OnChannelTestTone, this, kChannelTestTone);
 
    wxWindow* btn = FindWindow(ID_AUDIO_SETUP_BUTTON);
    wxRect r = btn->GetRect();
@@ -790,6 +794,15 @@ void AudioSetupToolBar::OnPlaybackRouting(wxCommandEvent&)
 void AudioSetupToolBar::OnRecordingRouting(wxCommandEvent&)
 {
    RecordingRoutingDialog dlg(&GetProjectFrame(mProject), mProject);
+   dlg.ShowModal();
+}
+
+void AudioSetupToolBar::OnChannelTestTone(wxCommandEvent&)
+{
+   // Modal so the user can interact with parameters live.  The
+   // dialog manages stream lifecycle on its own (StartTestTone /
+   // StopTestTone); closing the dialog stops any in-flight tone.
+   ChannelTestToneDialog dlg(&GetProjectFrame(mProject), mProject);
    dlg.ShowModal();
 }
 
