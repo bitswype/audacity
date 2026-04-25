@@ -288,7 +288,18 @@ class AUDACITY_DLL_API MeterPanel final
 
    bool      mActive;
 
+   //! Bar count used by GUI-thread code (HandleLayout, OnPaint,
+   //! OnMouse, OnMeterUpdate, etc.).  Single-thread access; plain
+   //! unsigned is fine.
    unsigned  mNumBars;
+   //! Atomic mirror of mNumBars, kept in lockstep by HandleLayout /
+   //! SetNumChannels.  Read by UpdateDisplay (PortAudio callback
+   //! thread) to clamp how many channels of incoming audio it sums
+   //! into the message queue.  Without this, the audio thread would
+   //! be racing the GUI thread's mNumBars writes -- technically UB
+   //! and observable as a one-tick visual glitch when channel count
+   //! changes during playback.
+   std::atomic<unsigned> mNumBarsAudio{ 2 };
    //! Number of channels the audio stream will deliver, set by
    //! SetNumChannels.  Drives mNumBars + label layout.  Capped at
    //! kMaxMeterBars.  Defaults to 2 for backward compatibility with

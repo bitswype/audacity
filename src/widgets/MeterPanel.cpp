@@ -992,8 +992,13 @@ static float ToDB(float v, float range)
 void MeterPanel::UpdateDisplay(
    unsigned numChannels, int numFrames, const float *sampleData)
 {
+   // bitswype fork: this runs on the PortAudio callback thread.
+   // Read the atomic mirror of mNumBars rather than the GUI-thread
+   // member directly, otherwise we'd race HandleLayout writes.
+   const unsigned numBarsLive =
+      mNumBarsAudio.load(std::memory_order_acquire);
    auto sptr = sampleData;
-   auto num = std::min(numChannels, mNumBars);
+   auto num = std::min(numChannels, numBarsLive);
    MeterUpdateMsg msg;
 
    memset(&msg, 0, sizeof(msg));
@@ -1020,7 +1025,8 @@ void MeterPanel::UpdateDisplay(
       }
       sptr += numChannels;
    }
-   for(unsigned int j=0; j<mNumBars; j++)
+   // Audio-thread loop: use the atomic mirror, not mNumBars.
+   for(unsigned int j=0; j<numBarsLive; j++)
       msg.rms[j] = sqrt(msg.rms[j]/numFrames);
 
    mQueue.Put(msg);
@@ -1345,6 +1351,9 @@ void MeterPanel::HandleLayout(wxDC &dc)
          std::max(1u, mDesiredNumChannels),
          static_cast<unsigned>(kMaxMeterBars));
    }
+   // Publish to the audio-thread mirror so UpdateDisplay clamps to
+   // the new bar count without racing.
+   mNumBarsAudio.store(mNumBars, std::memory_order_release);
 
    // Build the per-bar label list.  Stereo keeps L/R; everything
    // else gets numeric "1".."N" labels.  Whether we DRAW them is
@@ -1471,6 +1480,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
       const unsigned n = std::max(1u, mNumBars);
       const int totalGap = static_cast<int>(n - 1) * gap;
       barw = (width - totalGap) / static_cast<int>(n);
+      if (barw < 1) barw = 1;
       barh = height;
       for (unsigned i = 0; i < n; ++i) {
          const int bx = left + static_cast<int>(i) * (barw + gap);
@@ -1493,7 +1503,14 @@ void MeterPanel::HandleLayout(wxDC &dc)
                        mBar[n - 1].r.GetTop(),
                        mWidth,
                        mBar[n - 1].r.GetBottom());
-      mRuler.OfflimitsPixels(mRightTextPos.y - gap, mBar[n - 1].r.GetBottom());
+      // OfflimitsPixels protects the area where the legacy "R" label
+      // lives.  For >2 channels there's no R label, so the ruler can
+      // use the full bar height -- otherwise tick marks vanish near
+      // the bottom for no visible reason.
+      if (mNumBars == 2)
+         mRuler.OfflimitsPixels(mRightTextPos.y - gap, mBar[n - 1].r.GetBottom());
+      else
+         mRuler.OfflimitsPixels(0, 0);
       break;
    }
    case VerticalCompact: {
@@ -1582,6 +1599,7 @@ void MeterPanel::HandleLayout(wxDC &dc)
          const int totalGap = static_cast<int>(n - 1) * gap;
          barw = width - gap;
          barh = (height - totalGap) / static_cast<int>(n);
+         if (barh < 1) barh = 1;
          for (unsigned i = 0; i < n; ++i) {
             const int by = top + static_cast<int>(i) * (barh + gap);
             mBar[i].b = wxRect(left, by, barw, barh);
@@ -1633,15 +1651,27 @@ void MeterPanel::HandleLayout(wxDC &dc)
          const int totalGap = static_cast<int>(n - 1) * gap;
          barw = width - gap;
          barh = (height - totalGap) / static_cast<int>(n);
+         if (barh < 1) barh = 1;
          for (unsigned i = 0; i < n; ++i) {
             const int by = top + static_cast<int>(i) * (barh + gap);
             mBar[i].b = wxRect(left, by, barw, barh);
             SetBarAndClip(i, false);
          }
-         // Stretch the last bar to fill any leftover height.
-         mBar[n - 1].b.SetHeight(mHeight - mBar[n - 1].b.GetTop() - 1);
-         // Re-derive r/rClip after height tweak.
-         SetBarAndClip(n - 1, false);
+         // Stretch the last bar's bevel to fill leftover height.  We
+         // adjust the post-SetBarAndClip rectangles directly rather
+         // than re-running SetBarAndClip, which would subtract the
+         // clip-indicator width from b.width a second time and shrink
+         // the bar's drawing area each call.
+         constexpr int StrokeWidth = 1;
+         const int newBottom = mHeight - 1;
+         mBar[n - 1].b.SetHeight(newBottom - mBar[n - 1].b.GetTop());
+         mBar[n - 1].r = mBar[n - 1].b;
+         mBar[n - 1].r.Deflate(StrokeWidth);
+         if (mClip) {
+            // For horizontal bars, rClip height tracks b.height.
+            mBar[n - 1].rClip.SetHeight(
+               mBar[n - 1].b.height - StrokeWidth * 2);
+         }
 
          if (mNumBars != 2) {
             for (unsigned i = 0; i < n; ++i) {
