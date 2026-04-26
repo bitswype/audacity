@@ -166,6 +166,7 @@ set( SOURCES
       ProjectManager.h
       ProjectSettings.cpp
       ProjectSettings.h
+      PlaybackRoutingListener.cpp
       ProjectTempoListener.cpp
       ProjectTimeRuler.cpp
       ProjectTimeRuler.h
