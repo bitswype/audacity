@@ -17,7 +17,9 @@
 #include "AudioIOSequences.h"
 #include "ChannelRouting.h"
 #include "RouteTrackSamples.h"
-#include "PlaybackSchedule.h" // member variable
+#include "PlaybackSchedule.h"  // member variable
+#include "TestToneGenerator.h" // member variable
+#include "TestToneRender.h"    // FillTestToneOutputBuffer dispatch
 
 #include <functional>
 #include <memory>
@@ -213,6 +215,17 @@ public:
       unsigned long framesPerBuffer,
       float *outputMeterFloats
    );
+   //! bitswype fork: PortAudio-callback-time tone synthesis.  Called
+   //! from AudioCallback when mTestToneActive is true; replaces the
+   //! normal FillOutputBuffers / DrainInputBuffers / UpdateTimePosition
+   //! path.  Reads request parameters from the atomic snapshot fields
+   //! and calls mTestToneGen.Render(); writes to outputFloats either
+   //! directly (DirectHW) or via RouteTrackSamples (ThroughMatrix).
+   void FillTestToneOutputBuffer(
+      float *outputFloats,
+      unsigned long framesPerBuffer,
+      float *outputMeterFloats
+   );
    void DrainInputBuffers(
       constSamplePtr inputBuffer,
       unsigned long framesPerBuffer,
@@ -309,6 +322,36 @@ public:
    // Per-track output channel assignments, computed in AllocateBuffers.
    // See ChannelRouting.h for the routing rules.
    std::vector<TrackChannelAssignment> mChannelAssignments;
+
+   //! Channel test tone state.  When @a mTestToneActive is true, the
+   //! PortAudio callback synthesises a tone instead of running the
+   //! normal playback path.  Atomics let the GUI thread toggle and
+   //! retune without locking; mTestToneMask uses the same seqlock
+   //! pattern as the per-track masks for coherent 128-bit reads.
+   std::atomic<bool> mTestToneActive{ false };
+   std::atomic<int> mTestToneMode{
+      static_cast<int>(TestToneRequest::Mode::Off) };
+   std::atomic<int> mTestToneType{
+      static_cast<int>(TestToneGenerator::Type::Sine) };
+   //! Frequency / level stored as bit-cast uint64_t -- std::atomic<double>
+   //! is not guaranteed lock-free on every platform.
+   std::atomic<uint64_t> mTestToneFreqBits{ 0 };
+   std::atomic<uint64_t> mTestToneLevelDbBits{ 0 };
+   AtomicPlaybackOutputMask mTestToneMask;
+   //! Audio-thread-only state.  Phase / pink history persists across blocks.
+   TestToneGenerator mTestToneGen;
+   //! Audio-thread-only scratch buffers.  Sized in StartTestTone.
+   std::vector<float> mTestToneSrcBuf;
+   //! ThroughMatrix mode: per-output deinterleaved buffers.  Unused in
+   //! DirectHW mode.
+   std::vector<std::vector<float>> mTestToneOutBufs;
+   //! Pre-sized pointer array used by RouteTrackSamples in
+   //! ThroughMatrix mode.  Same length as mTestToneOutBufs.  Sized
+   //! once in StartTestTone instead of being constructed every
+   //! audio callback (the prior code did `std::vector<float*>(N)`
+   //! per callback, which heap-allocates -- not safe under the
+   //! audio-callback no-allocate rule).
+   std::vector<float*> mTestToneDstPtrs;
 
    std::vector<std::unique_ptr<Mixer>> mPlaybackMixers;
 
@@ -519,6 +562,30 @@ public:
    /** \brief Move the playback / recording position of the current stream
     * by the specified amount from where it is now */
    void SeekStream(double seconds) { mSeek = seconds; }
+
+   //! bitswype fork: open the playback device output-only and start
+   //! synthesising a test tone according to @p request.  Returns
+   //! false if the audio system is busy (another stream active /
+   //! monitoring) or the device-open failed.
+   //!
+   //! The stream stays open until StopTestTone() is called.  Live
+   //! parameter changes go through UpdateTestTone() rather than
+   //! Stop+Start, so the user can drag the level slider without
+   //! gaps.
+   bool StartTestTone(const TestToneRequest& request,
+      const AudioIOStartStreamOptions& options);
+   //! bitswype fork: live update of the active test tone's
+   //! parameters.  No-op if no test tone is active.
+   void UpdateTestTone(const TestToneRequest& request);
+   //! bitswype fork: stop the active test tone and close the
+   //! PortAudio stream.  No-op if no test tone is active.
+   void StopTestTone();
+   //! bitswype fork: true iff a test tone is currently being
+   //! synthesised.  Used by the dialog to enable / disable controls.
+   bool IsTestToneActive() const
+   {
+      return mTestToneActive.load(std::memory_order_relaxed);
+   }
 
    using PostRecordingAction = std::function<void()>;
 

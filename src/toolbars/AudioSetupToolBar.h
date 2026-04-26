@@ -28,6 +28,7 @@ class AudioSetupToolBar final : public ToolBar {
    static constexpr int kAudioDeviceRescan = 15801;
    //! bitswype fork: menu id for "Playback Routing Matrix..."
    static constexpr int kPlaybackRouting = 15802;
+   static constexpr int kChannelTestTone = 15804;
 
  public:
    static Identifier ID();
@@ -60,6 +61,7 @@ class AudioSetupToolBar final : public ToolBar {
    void OnAudioDeviceRescan(wxCommandEvent&);
    void OnSettings(wxCommandEvent& event);
    void OnPlaybackRouting(wxCommandEvent& event);
+   void OnChannelTestTone(wxCommandEvent& event);
    void CommonMenuItemSteps(bool audioSettingsChosen);
 
    bool ChangeHost(int hostId);

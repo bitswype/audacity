@@ -67,6 +67,7 @@ time warp info and AudioIOListener and whether the playback is looped.
 #include "DeviceManager.h"
 
 #include <cfloat>
+#include <cstring>
 #include <math.h>
 #include <stdlib.h>
 #include <algorithm>
@@ -850,6 +851,155 @@ void AudioIO::StartMonitoring( const AudioIOStartStreamOptions &options )
       // advertise the chosen I/O sample rate to the UI
       pListener->OnAudioIORate((int)mRate);
    }
+}
+
+namespace {
+// Helpers shared by Start/UpdateTestTone -- copies the request fields
+// into the atomic snapshot the audio callback reads.  Mode is written
+// LAST so a reader that sees mode != Off can trust the rest of the
+// snapshot is current.
+inline void StoreTestToneRequest(
+   const TestToneRequest& req,
+   std::atomic<int>& mode, std::atomic<int>& type,
+   std::atomic<uint64_t>& freq, std::atomic<uint64_t>& level,
+   AtomicPlaybackOutputMask& mask)
+{
+   uint64_t freqBits = 0;
+   std::memcpy(&freqBits, &req.frequencyHz, sizeof(double));
+   uint64_t levelBits = 0;
+   std::memcpy(&levelBits, &req.levelDb, sizeof(double));
+   type.store(static_cast<int>(req.toneType), std::memory_order_relaxed);
+   freq.store(freqBits, std::memory_order_relaxed);
+   level.store(levelBits, std::memory_order_relaxed);
+   mask.Store(req.mask);
+   // Mode last -- consumers gate on mode != Off.
+   mode.store(static_cast<int>(req.mode), std::memory_order_release);
+}
+} // namespace
+
+bool AudioIO::StartTestTone(const TestToneRequest& request,
+   const AudioIOStartStreamOptions& options)
+{
+   if (mPortStreamV19 || mStreamToken)
+      return false;
+   if (request.mode == TestToneRequest::Mode::Off)
+      return false;
+
+   const unsigned int playbackChannels =
+      static_cast<unsigned int>(std::max(1, AudioIOPlaybackChannels.Read()));
+
+   // Match the StartStream lifecycle: SetOwningProject (called from
+   // StartPortAudioStream) asserts when the previous owning project
+   // was never released.  In release builds this is a silent
+   // auto-recovery; in debug builds it is a popup.  Reset up front
+   // so we don't tickle the assertion when the project was left
+   // owning from a prior monitoring / playback session.
+   ResetOwningProject();
+
+   mUsingAlsa = false;
+   mCaptureFormat = floatSample;
+   mCaptureRate = 44100.0; // unused, no capture
+   const bool success =
+      StartPortAudioStream(options, playbackChannels, /*captureChannels*/ 0);
+   if (!success)
+      return false;
+
+   // Configure generator from the request.  Sample rate comes from
+   // the negotiated mRate set by StartPortAudioStream.
+   mTestToneGen.Reset();
+   mTestToneGen.Configure(
+      request.toneType, request.frequencyHz, request.levelDb, mRate);
+
+   // Pre-size scratch for a generous worst case so the audio
+   // callback never has to grow a vector.  PortAudio opens the
+   // stream with paFramesPerBufferUnspecified, so the host backend
+   // can hand us blocks of any size; in practice they top out
+   // around 4096 frames on ALSA period renegotiation, 2048 on
+   // CoreAudio, ~1024 on WASAPI.  16 384 leaves several octaves of
+   // headroom and costs only ~64 KiB per output channel (~8 MiB at
+   // 128 channels) which is acceptable on desktop targets.
+   //
+   // If a backend ever exceeds this, FillTestToneOutputBuffer's
+   // resize fall-back still works -- it just reintroduces the
+   // allocate-in-callback risk we're paying memory to avoid.
+   constexpr size_t kMaxFramesPerBuffer = 16384;
+   mTestToneSrcBuf.assign(kMaxFramesPerBuffer, 0.0f);
+   mTestToneOutBufs.assign(mNumPlaybackChannels,
+      std::vector<float>(kMaxFramesPerBuffer, 0.0f));
+   // Pre-size the destination-pointer array used by ThroughMatrix
+   // mode so RouteTrackSamples can be called without allocating
+   // inside the audio callback.  Re-pointed every call to track
+   // mTestToneOutBufs's data() since vector reallocation can move
+   // the underlying storage.
+   mTestToneDstPtrs.assign(mNumPlaybackChannels, nullptr);
+
+   // Publish the request snapshot, then flip the active flag.  Order
+   // matters: callback gates on mTestToneActive, so the snapshot must
+   // be visible by the time the flag is true.
+   StoreTestToneRequest(request,
+      mTestToneMode, mTestToneType,
+      mTestToneFreqBits, mTestToneLevelDbBits,
+      mTestToneMask);
+   mTestToneActive.store(true, std::memory_order_release);
+
+   mLastPaError = Pa_StartStream(mPortStreamV19);
+   if (mLastPaError != paNoError) {
+      mTestToneActive.store(false, std::memory_order_relaxed);
+      Pa_CloseStream(mPortStreamV19);
+      mPortStreamV19 = nullptr;
+      // StartPortAudioStream installed mOwningProject and only
+      // releases it when StartPortAudioStream itself fails.  We are
+      // past that point but the stream never started -- release the
+      // project ourselves so a retry doesn't trip
+      // SetOwningProject's already-owned assertion.
+      ResetOwningProject();
+      return false;
+   }
+
+   auto pListener = GetListener();
+   if (pListener)
+      pListener->OnAudioIORate(static_cast<int>(mRate));
+
+   return true;
+}
+
+void AudioIO::UpdateTestTone(const TestToneRequest& request)
+{
+   if (!mTestToneActive.load(std::memory_order_relaxed))
+      return;
+   StoreTestToneRequest(request,
+      mTestToneMode, mTestToneType,
+      mTestToneFreqBits, mTestToneLevelDbBits,
+      mTestToneMask);
+}
+
+void AudioIO::StopTestTone()
+{
+   if (!mTestToneActive.load(std::memory_order_relaxed))
+      return;
+   // Flip flag first so the next callback emits silence; then close.
+   mTestToneActive.store(false, std::memory_order_release);
+   mTestToneMode.store(static_cast<int>(TestToneRequest::Mode::Off),
+      std::memory_order_relaxed);
+
+   if (mPortStreamV19) {
+      if (!Pa_IsStreamStopped(mPortStreamV19))
+         Pa_AbortStream(mPortStreamV19);
+      Pa_CloseStream(mPortStreamV19);
+      mPortStreamV19 = nullptr;
+   }
+   // Release the owning-project reference set by StartPortAudioStream
+   // so a subsequent StartTestTone does not trip SetOwningProject's
+   // already-owned assertion.  Mirrors what StopStream does for the
+   // normal playback path.
+   ResetOwningProject();
+   // Release scratch.
+   mTestToneSrcBuf.clear();
+   mTestToneSrcBuf.shrink_to_fit();
+   mTestToneOutBufs.clear();
+   mTestToneOutBufs.shrink_to_fit();
+   mTestToneDstPtrs.clear();
+   mTestToneDstPtrs.shrink_to_fit();
 }
 
 int AudioIO::StartStream(const TransportSequences &sequences,
@@ -2925,6 +3075,68 @@ bool AudioIoCallback::FillOutputBuffers(
    return false;
 }
 
+void AudioIoCallback::FillTestToneOutputBuffer(
+   float* outputFloats, unsigned long framesPerBuffer,
+   float* outputMeterFloats)
+{
+   if (!outputFloats || mNumPlaybackChannels == 0)
+      return;
+
+   // Pull current parameters from the snapshot.  We re-Configure() the
+   // generator on every callback rather than tracking deltas -- the
+   // cost is trivial (a few math ops) and removes a class of races
+   // where the dialog updates field A then field B and the audio
+   // thread reads them in the wrong order.
+   const auto mode = static_cast<TestToneRequest::Mode>(
+      mTestToneMode.load(std::memory_order_acquire));
+   const auto type = static_cast<TestToneGenerator::Type>(
+      mTestToneType.load(std::memory_order_relaxed));
+   double freq, level;
+   {
+      const uint64_t fb =
+         mTestToneFreqBits.load(std::memory_order_relaxed);
+      const uint64_t lb =
+         mTestToneLevelDbBits.load(std::memory_order_relaxed);
+      std::memcpy(&freq, &fb, sizeof(double));
+      std::memcpy(&level, &lb, sizeof(double));
+   }
+   const PlaybackOutputMask mask = mTestToneMask.Load();
+
+   if (mode == TestToneRequest::Mode::Off || mask.empty()) {
+      // outputFloats is already zeroed by DoPlaythrough; no work.
+      return;
+   }
+
+   mTestToneGen.Configure(type, freq, level, mRate);
+
+   // Synthesis + per-mode dispatch happen in the testable seam in
+   // TestToneRender.cpp.  AudioIO retains responsibility only for
+   // the atomic snapshot, the meter mirror below, and the output
+   // clamp -- everything else lives in the unit-tested function.
+   TestToneRenderParams params;
+   params.mode = mode;
+   params.mask = mask;
+   params.numPlaybackChannels = mNumPlaybackChannels;
+   params.devicePlaybackChannels = mDevicePlaybackChannels;
+   RenderTestToneInterleaved(
+      params, mTestToneGen, framesPerBuffer, outputFloats,
+      mTestToneSrcBuf, mTestToneOutBufs, mTestToneDstPtrs);
+
+   // Mirror to meter buffer if it is separate from outputFloats.
+   if (outputMeterFloats != outputFloats) {
+      const size_t total =
+         static_cast<size_t>(framesPerBuffer) * mDevicePlaybackChannels;
+      for (size_t i = 0; i < total; ++i)
+         outputMeterFloats[i] += outputFloats[i];
+   }
+
+   ClampBuffer(outputFloats,
+      framesPerBuffer * mDevicePlaybackChannels);
+   if (outputMeterFloats != outputFloats)
+      ClampBuffer(outputMeterFloats,
+         framesPerBuffer * mDevicePlaybackChannels);
+}
+
 void AudioIoCallback::UpdateTimePosition(unsigned long framesPerBuffer)
 {
    // Quick returns if next to nothing to do.
@@ -3310,6 +3522,18 @@ int AudioIoCallback::AudioCallback(
       outputBuffer,
       framesPerBuffer,
       outputMeterFloats);
+
+   // bitswype fork: channel test tone takes over the output path.
+   // Replaces FillOutputBuffers / UpdateTimePosition / DrainInputBuffers
+   // entirely; the test-tone stream has no playback sequences, no
+   // capture sequences, and no schedule.  Meter still runs so the user
+   // sees per-channel level on the output meter.
+   if (mTestToneActive.load(std::memory_order_acquire)) {
+      FillTestToneOutputBuffer(
+         outputBuffer, framesPerBuffer, outputMeterFloats);
+      SendVuOutputMeterData(outputMeterFloats, framesPerBuffer);
+      return mCallbackReturn;
+   }
 
    // Test for no sequence audio to play (because we are paused and have faded
    // out)

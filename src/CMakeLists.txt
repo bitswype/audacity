@@ -638,6 +638,8 @@ set( SOURCES
       toolbars/MeterToolBar.h
       toolbars/PlaybackRoutingDialog.cpp
       toolbars/PlaybackRoutingDialog.h
+      toolbars/ChannelTestToneDialog.cpp
+      toolbars/ChannelTestToneDialog.h
       toolbars/SelectionBar.cpp
       toolbars/SelectionBar.h
       toolbars/SnappingToolBar.cpp
