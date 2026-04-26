@@ -60,6 +60,23 @@ double Rms(const std::vector<float>& buf)
    return std::sqrt(sum / buf.size());
 }
 
+//! Variance of the buffer.  Used to reject degenerate
+//! "constant-DC" implementations that would otherwise pass
+//! RMS / peak / mean tests.
+double Variance(const std::vector<float>& buf)
+{
+   if (buf.empty()) return 0.0;
+   double sum = 0.0;
+   for (float s : buf) sum += static_cast<double>(s);
+   const double mean = sum / buf.size();
+   double var = 0.0;
+   for (float s : buf) {
+      const double d = static_cast<double>(s) - mean;
+      var += d * d;
+   }
+   return var / buf.size();
+}
+
 } // namespace
 
 TEST_CASE("TestToneGenerator: Sine produces correct amplitude at -20 dBFS",
@@ -207,6 +224,15 @@ TEST_CASE("TestToneGenerator: Pink noise has nonzero RMS and bounded peak",
    const float peak = PeakAbs(buf);
    REQUIRE(peak <= LevelToLinear(-10.0) * 1.25f);
    REQUIRE(peak > 0.05f);
+
+   // Variance check: a constant-DC implementation (e.g. always
+   // returning 0.1f) would pass the rms / peak / mean tests, so
+   // assert non-trivial spread.  At -10 dBFS the configured peak
+   // amplitude is ~0.316, RMS for pink is roughly peak / 4 ~= 0.08,
+   // so variance ~= 0.0064.  A constant signal has variance 0.
+   // Use a generous lower bound to tolerate the actual statistical
+   // distribution while still failing degenerate generators.
+   REQUIRE(Variance(buf) > 1e-3);
 }
 
 TEST_CASE("TestToneGenerator: Pink mean is near zero across a long run",
@@ -241,6 +267,9 @@ TEST_CASE("TestToneGenerator: White noise covers a wide range",
    const double rms = Rms(buf);
    // Uniform [-1,+1] expected RMS = 1/sqrt(3) ~= 0.577.
    REQUIRE(rms == Approx(0.577).margin(0.05));
+   // And reject constant-DC: variance should be near 1/3 for
+   // uniform [-1, +1].
+   REQUIRE(Variance(buf) > 0.25);
 }
 
 TEST_CASE("TestToneGenerator: Reset is reproducible",
