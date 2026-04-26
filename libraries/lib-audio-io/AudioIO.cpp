@@ -910,15 +910,22 @@ bool AudioIO::StartTestTone(const TestToneRequest& request,
    mTestToneGen.Configure(
       request.toneType, request.frequencyHz, request.levelDb, mRate);
 
-   // Pre-size scratch.  PortAudio's framesPerBuffer is set to
-   // paFramesPerBufferUnspecified at open time, so we cannot bound it
-   // exactly; size for a generous worst case (4096 frames).  If a
-   // backend ever requests more, the inner loops handle it -- they
-   // grow the vector first.
-   constexpr size_t kInitialFrames = 4096;
-   mTestToneSrcBuf.assign(kInitialFrames, 0.0f);
+   // Pre-size scratch for a generous worst case so the audio
+   // callback never has to grow a vector.  PortAudio opens the
+   // stream with paFramesPerBufferUnspecified, so the host backend
+   // can hand us blocks of any size; in practice they top out
+   // around 4096 frames on ALSA period renegotiation, 2048 on
+   // CoreAudio, ~1024 on WASAPI.  16 384 leaves several octaves of
+   // headroom and costs only ~64 KiB per output channel (~8 MiB at
+   // 128 channels) which is acceptable on desktop targets.
+   //
+   // If a backend ever exceeds this, FillTestToneOutputBuffer's
+   // resize fall-back still works -- it just reintroduces the
+   // allocate-in-callback risk we're paying memory to avoid.
+   constexpr size_t kMaxFramesPerBuffer = 16384;
+   mTestToneSrcBuf.assign(kMaxFramesPerBuffer, 0.0f);
    mTestToneOutBufs.assign(mNumPlaybackChannels,
-      std::vector<float>(kInitialFrames, 0.0f));
+      std::vector<float>(kMaxFramesPerBuffer, 0.0f));
    // Pre-size the destination-pointer array used by ThroughMatrix
    // mode so RouteTrackSamples can be called without allocating
    // inside the audio callback.  Re-pointed every call to track
