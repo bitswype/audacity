@@ -22,6 +22,8 @@ set( SOURCES
    RingBuffer.h
    TestToneGenerator.cpp
    TestToneGenerator.h
+   TestToneRender.cpp
+   TestToneRender.h
 )
 set( LIBRARIES
    lib-mixer-interface

@@ -8,6 +8,7 @@ add_unit_test(
       lib-audio-io
    SOURCES
       TestToneGeneratorTest.cpp
+      TestToneRenderTest.cpp
    LIBRARIES
       lib-audio-io
 )

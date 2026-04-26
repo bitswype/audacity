@@ -3411,76 +3411,18 @@ void AudioIoCallback::FillTestToneOutputBuffer(
 
    mTestToneGen.Configure(type, freq, level, mRate);
 
-   // Grow scratch if PortAudio gave us a larger block than we
-   // pre-sized for.  Allocation here is safe-ish on most desktop
-   // backends (rare event, only at first oversized callback) but
-   // technically violates the no-allocate-in-callback rule.  Tracked
-   // as known tech-debt: see roadmap notes.
-   if (mTestToneSrcBuf.size() < framesPerBuffer)
-      mTestToneSrcBuf.resize(framesPerBuffer);
-   if (mode == TestToneRequest::Mode::ThroughMatrix) {
-      if (mTestToneOutBufs.size() < mNumPlaybackChannels)
-         mTestToneOutBufs.resize(mNumPlaybackChannels);
-      for (auto& buf : mTestToneOutBufs)
-         if (buf.size() < framesPerBuffer)
-            buf.resize(framesPerBuffer);
-   }
-
-   // 1. Synthesise the mono source buffer.
-   mTestToneGen.Render(mTestToneSrcBuf.data(), framesPerBuffer);
-
-   // 2. Distribute to outputs per the mode.
-   if (mode == TestToneRequest::Mode::DirectHW) {
-      // Walk the device's reachable bits in the mask, write tone
-      // directly to the interleaved output buffer at that channel.
-      // Bits past mNumPlaybackChannels are ignored (the device
-      // physically cannot reach them).
-      const float* src = mTestToneSrcBuf.data();
-      const size_t devCh = mDevicePlaybackChannels;
-      for (unsigned ch = 0; ch < mNumPlaybackChannels; ++ch) {
-         if (!mask.test(ch))
-            continue;
-         for (unsigned long i = 0; i < framesPerBuffer; ++i)
-            outputFloats[devCh * i + ch] += src[i];
-      }
-   } else {
-      // ThroughMatrix: actually run the production routing function
-      // on the synthesised tone, then interleave into outputFloats.
-      // This exercises the same code path real tracks use, so a
-      // matrix-mode test failing while direct-mode passes localises
-      // the bug to RouteTrackSamples or its mask interpretation.
-      for (auto& buf : mTestToneOutBufs)
-         std::fill_n(buf.begin(), framesPerBuffer, 0.0f);
-
-      // Re-point mTestToneDstPtrs each call: the inner buffers may
-      // have been resize()d above (cf. tech-debt note) which can
-      // move their data() under us.  No allocation here -- the
-      // outer vector was sized in StartTestTone.
-      if (mTestToneDstPtrs.size() < mNumPlaybackChannels)
-         mTestToneDstPtrs.resize(mNumPlaybackChannels);
-      for (size_t n = 0; n < mNumPlaybackChannels; ++n)
-         mTestToneDstPtrs[n] = mTestToneOutBufs[n].data();
-      float* srcPtr = mTestToneSrcBuf.data();
-      float* const* srcPtrs = &srcPtr;
-
-      TrackChannelAssignment assignment;
-      assignment.outputMask = mask;
-      RouteTrackSamples(
-         assignment,
-         /*numSourceChannels*/ 1,
-         /*numOutputChannels*/ mNumPlaybackChannels,
-         /*samplesAvailable*/ framesPerBuffer,
-         /*getChannelVolume*/ [](int) { return 1.0f; },
-         srcPtrs,
-         mTestToneDstPtrs.data());
-
-      const size_t devCh = mDevicePlaybackChannels;
-      for (unsigned ch = 0; ch < mNumPlaybackChannels; ++ch) {
-         const float* d = mTestToneOutBufs[ch].data();
-         for (unsigned long i = 0; i < framesPerBuffer; ++i)
-            outputFloats[devCh * i + ch] += d[i];
-      }
-   }
+   // Synthesis + per-mode dispatch happen in the testable seam in
+   // TestToneRender.cpp.  AudioIO retains responsibility only for
+   // the atomic snapshot, the meter mirror below, and the output
+   // clamp -- everything else lives in the unit-tested function.
+   TestToneRenderParams params;
+   params.mode = mode;
+   params.mask = mask;
+   params.numPlaybackChannels = mNumPlaybackChannels;
+   params.devicePlaybackChannels = mDevicePlaybackChannels;
+   RenderTestToneInterleaved(
+      params, mTestToneGen, framesPerBuffer, outputFloats,
+      mTestToneSrcBuf, mTestToneOutBufs, mTestToneDstPtrs);
 
    // Mirror to meter buffer if it is separate from outputFloats.
    if (outputMeterFloats != outputFloats) {

@@ -19,8 +19,9 @@
 #include "PlaybackInputMask.h"
 #include "RouteRecordingSamples.h"
 #include "RouteTrackSamples.h"
-#include "PlaybackSchedule.h" // member variable
+#include "PlaybackSchedule.h"  // member variable
 #include "TestToneGenerator.h" // member variable
+#include "TestToneRender.h"    // FillTestToneOutputBuffer dispatch
 
 #include <functional>
 #include <memory>
