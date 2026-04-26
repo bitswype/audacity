@@ -24,6 +24,7 @@
 
 #include "AudioIO.h"
 #include "AudioIOBase.h"
+#include "PlaybackRoutingDialog.h"
 #include "Project.h"
 #include "ProjectAudioIO.h"
 #include "ProjectRate.h"
@@ -55,6 +56,7 @@ double ParseDouble(const wxString& s, double fallback)
 enum {
    kPlayId = 1000,
    kStopId,
+   kCycleId,
    kSelectAllId,
    kClearId,
    kFreqTextId,
@@ -63,14 +65,19 @@ enum {
    kToneTypeId,
    kModeDirectId,
    kModeMatrixId,
+   kDwellTextId,
    kPollTimerId,
+   kCycleTimerId,
+   kOpenMatrixId,
 };
 
 BEGIN_EVENT_TABLE(ChannelTestToneDialog, wxDialogWrapper)
    EVT_BUTTON(kPlayId, ChannelTestToneDialog::OnPlay)
    EVT_BUTTON(kStopId, ChannelTestToneDialog::OnStop)
+   EVT_BUTTON(kCycleId, ChannelTestToneDialog::OnCycle)
    EVT_BUTTON(kSelectAllId, ChannelTestToneDialog::OnSelectAll)
    EVT_BUTTON(kClearId, ChannelTestToneDialog::OnClear)
+   EVT_BUTTON(kOpenMatrixId, ChannelTestToneDialog::OnOpenMatrix)
    EVT_BUTTON(wxID_CLOSE, ChannelTestToneDialog::OnCloseButton)
    EVT_CLOSE(ChannelTestToneDialog::OnClose)
    EVT_TEXT(kFreqTextId, ChannelTestToneDialog::OnFrequencyText)
@@ -80,6 +87,7 @@ BEGIN_EVENT_TABLE(ChannelTestToneDialog, wxDialogWrapper)
    EVT_RADIOBUTTON(kModeDirectId, ChannelTestToneDialog::OnMode)
    EVT_RADIOBUTTON(kModeMatrixId, ChannelTestToneDialog::OnMode)
    EVT_TIMER(kPollTimerId, ChannelTestToneDialog::OnPollTimer)
+   EVT_TIMER(kCycleTimerId, ChannelTestToneDialog::OnCycleTimer)
 END_EVENT_TABLE()
 
 ChannelTestToneDialog::ChannelTestToneDialog(
@@ -101,6 +109,7 @@ ChannelTestToneDialog::ChannelTestToneDialog(
 
    mPollTimer = std::make_unique<wxTimer>(this, kPollTimerId);
    mPollTimer->Start(250, wxTIMER_CONTINUOUS);
+   mCycleTimer = std::make_unique<wxTimer>(this, kCycleTimerId);
 
    RefreshControlState();
 }
@@ -109,6 +118,8 @@ ChannelTestToneDialog::~ChannelTestToneDialog()
 {
    if (mPollTimer)
       mPollTimer->Stop();
+   if (mCycleTimer)
+      mCycleTimer->Stop();
    // If the dialog is destroyed while a tone is playing, stop it.
    auto* gAudioIO = AudioIO::Get();
    if (gAudioIO && gAudioIO->IsTestToneActive())
@@ -119,17 +130,59 @@ void ChannelTestToneDialog::BuildUI()
 {
    auto* outer = new wxBoxSizer(wxVERTICAL);
 
-   // Mode radio buttons
+   // Mode radio buttons + access to the Playback Routing Matrix.
+   //
+   // Both modes use the same checkbox grid below to define the mask.
+   // The user-facing difference is which code path the audio engine
+   // runs the tone through:
+   //
+   //   Direct: tone -> outputBuffer[bit] for each set bit (no routing
+   //     engine).  Useful to confirm "speaker B is wired to physical
+   //     output A" independent of any routing logic.
+   //   Matrix: tone -> RouteTrackSamples(mask) -> outputBuffer
+   //     (production engine).  Useful to confirm the routing engine
+   //     itself is correctly walking the mask -- if Direct works on
+   //     the same channel and Matrix doesn't, the bug is in
+   //     RouteTrackSamples or its mask interpretation.
+   //
+   // The "Open Routing Matrix..." button surfaces the per-track
+   // routing dialog so the user can configure / inspect the saved
+   // routing for real tracks alongside the test tone, without
+   // closing this dialog.
    {
       auto* box = new wxStaticBoxSizer(wxVERTICAL, this, _("Test mode"));
       mDirectRadio = new wxRadioButton(this, kModeDirectId,
-         _("Direct hardware test  (bypasses routing matrix)"),
+         _("Direct hardware test -- bypass routing engine "
+           "(verify physical wiring)"),
          wxDefaultPosition, wxDefaultSize, wxRB_GROUP);
       mMatrixRadio = new wxRadioButton(this, kModeMatrixId,
-         _("Routing matrix test  (runs through RouteTrackSamples)"));
+         _("Routing matrix test -- run through RouteTrackSamples "
+           "(verify routing engine for the same mask)"));
       mDirectRadio->SetValue(true);
       box->Add(mDirectRadio, 0, wxALL, 4);
       box->Add(mMatrixRadio, 0, wxALL, 4);
+
+      auto* btnRow = new wxBoxSizer(wxHORIZONTAL);
+      // No custom foreground: GRAYTEXT inside a wxStaticBoxSizer can
+      // resolve to dark-on-dark under GTK dark themes.  Use the
+      // theme's default text colour and lean on italics for the
+      // visual hierarchy, which works in both light and dark.
+      auto* hint = new wxStaticText(this, wxID_ANY,
+         _("Tip: same checkbox grid drives both modes; only the audio "
+           "code path differs."));
+      auto hintFont = hint->GetFont();
+      hintFont.MakeItalic();
+      hint->SetFont(hintFont);
+      btnRow->Add(hint, 1, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
+      auto* openMatrixBtn =
+         new wxButton(this, kOpenMatrixId, _("Open Routing &Matrix..."));
+      openMatrixBtn->SetToolTip(
+         _("Open the per-track Playback Routing Matrix in a separate "
+           "dialog.  Useful for configuring track routing while you "
+           "test it here."));
+      btnRow->Add(openMatrixBtn, 0);
+      box->Add(btnRow, 0, wxALL | wxEXPAND, 4);
+
       outer->Add(box, 0, wxALL | wxEXPAND, 6);
    }
 
@@ -149,8 +202,15 @@ void ChannelTestToneDialog::BuildUI()
 
       row->Add(new wxStaticText(this, wxID_ANY, _("Frequency:")),
          0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
-      mFreqText = new wxTextCtrl(this, kFreqTextId, wxT("1000.0"),
+      // Create empty + ChangeValue() afterwards.  The ctor's value
+      // argument fires wxEVT_TEXT synchronously, which would dispatch
+      // our OnFrequencyText handler before the mFreqText assignment
+      // landed -- the handler would dereference a null member and
+      // crash the dialog on first open.  ChangeValue() suppresses the
+      // event.  Same pattern for mLevelText below.
+      mFreqText = new wxTextCtrl(this, kFreqTextId, wxEmptyString,
          wxDefaultPosition, wxSize(80, -1));
+      mFreqText->ChangeValue(wxT("1000.0"));
       row->Add(mFreqText, 0, wxRIGHT, 4);
       row->Add(new wxStaticText(this, wxID_ANY, _("Hz")),
          0, wxALIGN_CENTER_VERTICAL);
@@ -162,8 +222,9 @@ void ChannelTestToneDialog::BuildUI()
       auto* row = new wxBoxSizer(wxHORIZONTAL);
       row->Add(new wxStaticText(this, wxID_ANY, _("Level:")),
          0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
-      mLevelText = new wxTextCtrl(this, kLevelTextId, wxT("-20.0"),
+      mLevelText = new wxTextCtrl(this, kLevelTextId, wxEmptyString,
          wxDefaultPosition, wxSize(72, -1));
+      mLevelText->ChangeValue(wxT("-20.0"));
       row->Add(mLevelText, 0, wxRIGHT, 4);
       row->Add(new wxStaticText(this, wxID_ANY, _("dBFS")),
          0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 8);
@@ -183,9 +244,13 @@ void ChannelTestToneDialog::BuildUI()
             mNumDeviceChannels));
       outer->Add(label, 0, wxLEFT | wxRIGHT, 6);
 
+      // Both scroll bars enabled.  Horizontal is needed because the
+      // grid is 16 columns wide -- on smaller displays (or when the
+      // user shrinks the dialog) the right-hand columns would
+      // otherwise vanish off the edge with no way to reach them.
       mGridScroll = new wxScrolledWindow(this, wxID_ANY,
-         wxDefaultPosition, wxSize(640, 220),
-         wxBORDER_SIMPLE | wxVSCROLL);
+         wxDefaultPosition, wxSize(880, 240),
+         wxBORDER_SIMPLE | wxHSCROLL | wxVSCROLL);
       auto* grid = new wxFlexGridSizer(kGridColumns, 4, 4);
       mChannelChecks.assign(kMaxDisplayChannels, nullptr);
       for (size_t i = 0; i < kMaxDisplayChannels; ++i) {
@@ -203,7 +268,7 @@ void ChannelTestToneDialog::BuildUI()
       }
       mGridScroll->SetSizer(grid);
       mGridScroll->FitInside();
-      mGridScroll->SetScrollRate(0, 16);
+      mGridScroll->SetScrollRate(16, 16);
       outer->Add(mGridScroll, 1, wxLEFT | wxRIGHT | wxBOTTOM | wxEXPAND, 6);
    }
 
@@ -224,6 +289,20 @@ void ChannelTestToneDialog::BuildUI()
    // Bottom buttons
    {
       auto* row = new wxBoxSizer(wxHORIZONTAL);
+      row->Add(new wxStaticText(this, wxID_ANY, _("Cycle dwell:")),
+         0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 4);
+      mDwellText = new wxTextCtrl(this, kDwellTextId, wxEmptyString,
+         wxDefaultPosition, wxSize(56, -1));
+      mDwellText->ChangeValue(wxT("2.0"));
+      row->Add(mDwellText, 0, wxRIGHT, 4);
+      row->Add(new wxStaticText(this, wxID_ANY, _("s/ch")),
+         0, wxALIGN_CENTER_VERTICAL | wxRIGHT, 12);
+      mCycleBtn = new wxButton(this, kCycleId, _("&Cycle selected"));
+      mCycleBtn->SetToolTip(
+         _("Walk through the checked channels one at a time, "
+           "playing the configured tone on each for the dwell "
+           "time before advancing.  Click again to stop."));
+      row->Add(mCycleBtn, 0, wxRIGHT, 12);
       row->AddStretchSpacer();
       mPlayBtn = new wxButton(this, kPlayId, _("&Play"));
       mStopBtn = new wxButton(this, kStopId, _("&Stop"));
@@ -234,7 +313,13 @@ void ChannelTestToneDialog::BuildUI()
    }
 
    SetSizerAndFit(outer);
+   // Default size big enough to show all 16 grid columns natively on
+   // typical 1920x1080 displays without horizontal scroll, while
+   // staying small enough to fit a 1366x768 laptop.  The scroll bars
+   // are still present so smaller screens / shrunk dialogs can reach
+   // the right-hand columns.
    SetMinSize(wxSize(720, 540));
+   SetSize(wxSize(960, 620));
 }
 
 TestToneRequest ChannelTestToneDialog::MakeRequest() const
@@ -286,8 +371,17 @@ void ChannelTestToneDialog::RefreshControlState()
       mPlayBtn->Enable(!active && !busy);
    if (mStopBtn)
       mStopBtn->Enable(active);
+   if (mCycleBtn)
+      mCycleBtn->SetLabel(mCycling
+         ? _("Stop &cycling")
+         : _("&Cycle selected"));
 
-   if (active) {
+   if (mCycling && active && !mCycleBits.empty()) {
+      const unsigned cur = mCycleBits[mCycleIndex] + 1;
+      mStatusText->SetLabel(wxString::Format(
+         _("Cycling: channel %u (%zu of %zu)"),
+         cur, mCycleIndex + 1, mCycleBits.size()));
+   } else if (active) {
       // Build "Playing on channels: 5, 10" up to a sensible truncation.
       wxString channelsStr;
       const auto req = MakeRequest();
@@ -319,6 +413,11 @@ void ChannelTestToneDialog::OnPlay(wxCommandEvent&)
 {
    auto* gAudioIO = AudioIO::Get();
    if (!gAudioIO) return;
+   // A direct Play takes precedence over an in-flight cycle.  Stop
+   // the cycle (timer + state) before opening the stream, otherwise
+   // the dwell timer would keep rewriting the mask underneath us.
+   if (mCycling)
+      StopCycle();
    if (gAudioIO->IsBusy()) {
       RefreshControlState();
       return;
@@ -339,8 +438,116 @@ void ChannelTestToneDialog::OnStop(wxCommandEvent&)
 {
    auto* gAudioIO = AudioIO::Get();
    if (!gAudioIO) return;
+   if (mCycling)
+      StopCycle();
    gAudioIO->StopTestTone();
    RefreshControlState();
+}
+
+void ChannelTestToneDialog::OnCycle(wxCommandEvent&)
+{
+   if (mCycling)
+      StopCycle();
+   else
+      StartCycle();
+   RefreshControlState();
+}
+
+void ChannelTestToneDialog::OnOpenMatrix(wxCommandEvent&)
+{
+   // The routing matrix dialog mutates per-track masks via an Apply
+   // step.  In matrix mode the test tone uses whatever mask is in
+   // our checkbox grid -- not a project track's mask -- so changes
+   // there do NOT affect the running tone.  Stop the tone first
+   // anyway, since the routing dialog is modal and most users want
+   // a quiet test bench while wiring up real tracks.
+   auto* gAudioIO = AudioIO::Get();
+   if (gAudioIO && gAudioIO->IsTestToneActive()) {
+      if (mCycling) StopCycle();
+      gAudioIO->StopTestTone();
+   }
+   PlaybackRoutingDialog dlg(this, mProject);
+   dlg.ShowModal();
+   RefreshControlState();
+}
+
+void ChannelTestToneDialog::OnCycleTimer(wxTimerEvent&)
+{
+   if (!mCycling || mCycleBits.empty())
+      return;
+   mCycleIndex = (mCycleIndex + 1) % mCycleBits.size();
+   ApplyCycleStep();
+   RefreshControlState();
+}
+
+void ChannelTestToneDialog::StartCycle()
+{
+   // Snapshot the currently checked channels so the cycle order is
+   // stable even if the user touches the grid mid-cycle.  Bits past
+   // the device's reachable count are filtered out so we don't dwell
+   // silently on a bit that produces no sound.
+   mCycleBits.clear();
+   for (size_t i = 0; i < mChannelChecks.size() && i < mNumDeviceChannels;
+        ++i)
+   {
+      if (mChannelChecks[i] && mChannelChecks[i]->GetValue())
+         mCycleBits.push_back(static_cast<unsigned>(i));
+   }
+   if (mCycleBits.empty()) {
+      mStatusText->SetLabel(
+         _("Select one or more reachable channels to cycle."));
+      return;
+   }
+   mCycleIndex = 0;
+   mCycling = true;
+   ApplyCycleStep();
+
+   // Parse dwell, clamp to a sensible 0.05 - 60 s range so a
+   // mistyped value doesn't turn the cycle into "play forever on
+   // channel 1" or "rip-tear at 1ms/ch".
+   double dwellSec = 2.0;
+   if (mDwellText) {
+      dwellSec = ParseDouble(mDwellText->GetValue(), 2.0);
+      dwellSec = std::clamp(dwellSec, 0.05, 60.0);
+   }
+   const int dwellMs = static_cast<int>(dwellSec * 1000.0);
+   if (mCycleTimer)
+      mCycleTimer->Start(dwellMs, wxTIMER_CONTINUOUS);
+}
+
+void ChannelTestToneDialog::StopCycle()
+{
+   mCycling = false;
+   if (mCycleTimer)
+      mCycleTimer->Stop();
+   mCycleBits.clear();
+   mCycleIndex = 0;
+}
+
+void ChannelTestToneDialog::ApplyCycleStep()
+{
+   if (mCycleBits.empty())
+      return;
+   auto* gAudioIO = AudioIO::Get();
+   if (!gAudioIO)
+      return;
+
+   // Build a request that uses only the current cycle channel.
+   TestToneRequest req = MakeRequest();
+   PlaybackOutputMask single;
+   single.set(mCycleBits[mCycleIndex]);
+   req.mask = single;
+
+   if (gAudioIO->IsTestToneActive()) {
+      gAudioIO->UpdateTestTone(req);
+   } else if (!gAudioIO->IsBusy()) {
+      AudioIOStartStreamOptions options(
+         mProject.shared_from_this(),
+         ProjectRate::Get(mProject).GetRate());
+      if (!gAudioIO->StartTestTone(req, options))
+         mStatusText->SetLabel(_("Failed to open the audio device."));
+   }
+   mLast = req;
 }
 
 void ChannelTestToneDialog::OnSelectAll(wxCommandEvent&)
@@ -367,6 +574,7 @@ void ChannelTestToneDialog::OnCloseButton(wxCommandEvent&)
 
 void ChannelTestToneDialog::OnClose(wxCloseEvent& event)
 {
+   if (mCycling) StopCycle();
    auto* gAudioIO = AudioIO::Get();
    if (gAudioIO && gAudioIO->IsTestToneActive())
       gAudioIO->StopTestTone();

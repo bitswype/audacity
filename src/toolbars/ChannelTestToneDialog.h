@@ -59,6 +59,8 @@ private:
 
    void OnPlay(wxCommandEvent&);
    void OnStop(wxCommandEvent&);
+   void OnCycle(wxCommandEvent&);
+   void OnOpenMatrix(wxCommandEvent&);
    void OnSelectAll(wxCommandEvent&);
    void OnClear(wxCommandEvent&);
    void OnCloseButton(wxCommandEvent&);
@@ -69,6 +71,17 @@ private:
    void OnToneType(wxCommandEvent&);
    void OnMode(wxCommandEvent&);
    void OnPollTimer(wxTimerEvent&);
+   void OnCycleTimer(wxTimerEvent&);
+
+   //! Begin cycling through @a mCycleBits one channel at a time.
+   //! Captures the current grid selection and dwell time.  No-op if
+   //! the grid has no checked channels.
+   void StartCycle();
+   //! Stop cycling and silence the tone.
+   void StopCycle();
+   //! Apply the request for the current cycle step.  Starts the
+   //! tone if it is not active yet, otherwise updates live.
+   void ApplyCycleStep();
 
    AudacityProject& mProject;
 
@@ -87,14 +100,27 @@ private:
    std::vector<wxCheckBox*> mChannelChecks;
    wxButton* mPlayBtn = nullptr;
    wxButton* mStopBtn = nullptr;
+   wxButton* mCycleBtn = nullptr;
+   wxTextCtrl* mDwellText = nullptr;
    wxStaticText* mStatusText = nullptr;
    //! 250ms poll timer to refresh status line when AudioIO state
    //! changes outside of our control (another stream stops, etc.).
    std::unique_ptr<wxTimer> mPollTimer;
+   //! One-shot dwell timer used while cycling through channels.
+   std::unique_ptr<wxTimer> mCycleTimer;
 
    //! Cached last-applied request.  Lets us avoid hammering AudioIO
    //! with no-op updates on every keystroke / slider tick.
    TestToneRequest mLast;
+
+   //! Cycle state.  When @a mCycling is true the dwell timer drives
+   //! one-channel-at-a-time playback through @a mCycleBits at index
+   //! @a mCycleIndex, rather than the full mask the grid would
+   //! produce.  Snapshotted at StartCycle so changes to the grid
+   //! mid-cycle don't reshape the cycle order.
+   bool mCycling = false;
+   std::vector<unsigned> mCycleBits;
+   size_t mCycleIndex = 0;
 
    wxDECLARE_EVENT_TABLE();
 };

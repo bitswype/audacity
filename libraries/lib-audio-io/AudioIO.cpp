@@ -888,6 +888,14 @@ bool AudioIO::StartTestTone(const TestToneRequest& request,
    const unsigned int playbackChannels =
       static_cast<unsigned int>(std::max(1, AudioIOPlaybackChannels.Read()));
 
+   // Match the StartStream lifecycle: SetOwningProject (called from
+   // StartPortAudioStream) asserts when the previous owning project
+   // was never released.  In release builds this is a silent
+   // auto-recovery; in debug builds it is a popup.  Reset up front
+   // so we don't tickle the assertion when the project was left
+   // owning from a prior monitoring / playback session.
+   ResetOwningProject();
+
    mUsingAlsa = false;
    mCaptureFormat = floatSample;
    mCaptureRate = 44100.0; // unused, no capture
@@ -961,6 +969,11 @@ void AudioIO::StopTestTone()
       Pa_CloseStream(mPortStreamV19);
       mPortStreamV19 = nullptr;
    }
+   // Release the owning-project reference set by StartPortAudioStream
+   // so a subsequent StartTestTone does not trip SetOwningProject's
+   // already-owned assertion.  Mirrors what StopStream does for the
+   // normal playback path.
+   ResetOwningProject();
    // Release scratch.
    mTestToneSrcBuf.clear();
    mTestToneSrcBuf.shrink_to_fit();
