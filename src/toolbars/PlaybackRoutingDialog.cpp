@@ -196,9 +196,6 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
       btnRow->Add(new wxButton(this, wxID_CANCEL, _("Cancel")), 0);
       outer->Add(btnRow, 0, wxALL | wxEXPAND, 8);
 
-      // See RecordingRoutingDialog for the why of this dance.
-      constexpr int kReopenAfterCreate = wxID_HIGHEST + 1;
-
       Bind(wxEVT_BUTTON, [this, spin](wxCommandEvent&) {
          const int n = spin->GetValue();
          auto &tracks = TrackList::Get(mProject);
@@ -240,7 +237,7 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          }
          ProjectHistory::Get(mProject).PushState(
             XO("Created tracks for routing"), XO("New Tracks"));
-         EndModal(kReopenAfterCreate);
+         EndModal(kRoutingDialogReopenAfterCreate);
       }, wxID_OK);
       Bind(wxEVT_BUTTON,
          [this](wxCommandEvent&) { EndModal(wxID_CANCEL); }, wxID_CANCEL);

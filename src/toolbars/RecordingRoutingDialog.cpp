@@ -8,6 +8,10 @@
 
 #include "RecordingRoutingDialog.h"
 
+// For the shared kRoutingDialogReopenAfterCreate constant used by
+// the empty-state Create-tracks signalling protocol.
+#include "PlaybackRoutingDialog.h"
+
 #include <wx/button.h>
 #include <wx/checkbox.h>
 #include <wx/choice.h>
@@ -205,12 +209,6 @@ void RecordingRoutingDialog::BuildUI(WaveTrack *focusedTrack)
       btnRow->Add(new wxButton(this, wxID_CANCEL, _("Cancel")), 0);
       outer->Add(btnRow, 0, wxALL | wxEXPAND, 8);
 
-      // Use a custom return code to signal "tracks were just
-      // created -- caller should reopen the dialog so the matrix
-      // can show their masks".  wxID_OK is also returned on normal
-      // Close from the matrix path, so we use a distinct value.
-      constexpr int kReopenAfterCreate = wxID_HIGHEST + 1;
-
       Bind(wxEVT_BUTTON, [this, spin](wxCommandEvent&) {
          const int n = spin->GetValue();
          auto &tracks = TrackList::Get(mProject);
@@ -260,7 +258,7 @@ void RecordingRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          }
          ProjectHistory::Get(mProject).PushState(
             XO("Created tracks for routing"), XO("New Tracks"));
-         EndModal(kReopenAfterCreate);
+         EndModal(kRoutingDialogReopenAfterCreate);
       }, wxID_OK);
       // Cancel and the X both end the modal loop with CANCEL.  We
       // bind explicitly because the dialog already has its own

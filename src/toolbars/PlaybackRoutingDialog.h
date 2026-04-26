@@ -36,9 +36,20 @@
 #include "PlaybackOutputMask.h"
 #include "wxPanelWrapper.h"
 
+#include <wx/defs.h>     // wxID_HIGHEST
 #include <wx/scrolwin.h> // wxScrolledCanvas is a template alias
 
 #include <vector>
+
+//! ShowModal() return code used by both the playback and recording
+//! routing dialogs to signal "the user just created tracks via the
+//! empty-state form, please reopen the dialog so they can configure
+//! the freshly-created masks".  Toolbar handlers loop on this value.
+//!
+//! Defined in one place to keep the dialog and its caller in
+//! lockstep -- a drift between the two would silently break the
+//! auto-reopen contract.
+constexpr int kRoutingDialogReopenAfterCreate = wxID_HIGHEST + 1;
 
 class AudacityProject;
 class WaveTrack;
