@@ -595,26 +595,39 @@ void ChannelTestToneDialog::OnFrequencyText(wxCommandEvent&)
 
 void ChannelTestToneDialog::OnLevelText(wxCommandEvent&)
 {
+   if (mUpdatingLevelControls)
+      return;
    const double v = ParseDouble(mLevelText->GetValue(), -20.0);
    if (mLevelSlider) {
       const int tenths =
          std::clamp(static_cast<int>(v * 10.0),
             kSliderMinTenths, kSliderMaxTenths);
-      // Avoid feedback loops -- only push if actually different.
-      if (mLevelSlider->GetValue() != tenths)
+      if (mLevelSlider->GetValue() != tenths) {
+         // wxSlider::SetValue posts wxEVT_SLIDER on GTK (unlike
+         // wxTextCtrl::ChangeValue which suppresses wxEVT_TEXT),
+         // which would re-enter OnLevelSlider and double-push the
+         // request to AudioIO.  Guard with mUpdatingLevelControls.
+         mUpdatingLevelControls = true;
          mLevelSlider->SetValue(tenths);
+         mUpdatingLevelControls = false;
+      }
    }
    PushParamsIfActive();
 }
 
 void ChannelTestToneDialog::OnLevelSlider(wxCommandEvent&)
 {
+   if (mUpdatingLevelControls)
+      return;
    const int tenths = mLevelSlider->GetValue();
    const double v = static_cast<double>(tenths) / 10.0;
    if (mLevelText) {
       const wxString newText = wxString::Format(wxT("%.1f"), v);
-      if (mLevelText->GetValue() != newText)
+      if (mLevelText->GetValue() != newText) {
+         mUpdatingLevelControls = true;
          mLevelText->ChangeValue(newText);
+         mUpdatingLevelControls = false;
+      }
    }
    PushParamsIfActive();
 }

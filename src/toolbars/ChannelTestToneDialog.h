@@ -122,5 +122,13 @@ private:
    std::vector<unsigned> mCycleBits;
    size_t mCycleIndex = 0;
 
+   //! Re-entry guard for the level slider <-> text two-way binding.
+   //! OnLevelText calls SetValue on the slider, which on GTK fires
+   //! wxEVT_SLIDER, which dispatches OnLevelSlider, which would
+   //! call PushParamsIfActive a second time per keystroke.  The
+   //! guard short-circuits the second call so each user-driven
+   //! change pushes exactly one UpdateTestTone.
+   bool mUpdatingLevelControls = false;
+
    wxDECLARE_EVENT_TABLE();
 };
