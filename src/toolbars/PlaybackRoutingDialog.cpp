@@ -1,0 +1,604 @@
+/**********************************************************************
+
+  Audacity: A Digital Audio Editor
+
+  PlaybackRoutingDialog.cpp
+
+**********************************************************************/
+
+#include "PlaybackRoutingDialog.h"
+
+#include <wx/button.h>
+#include <wx/checkbox.h>
+#include <wx/choice.h>
+#include <wx/dcclient.h>
+#include <wx/display.h>
+#include <wx/scrolwin.h>
+#include <wx/settings.h>
+#include <wx/sizer.h>
+#include <wx/spinctrl.h>
+#include <wx/stattext.h>
+
+#include "AudioIOBase.h"        // for AudioIOPlaybackChannels
+#include "PlaybackOutputMask.h"
+#include "Project.h"
+#include "ProjectHistory.h"
+#include "ProjectRate.h"
+#include "QualitySettings.h"
+#include "ShuttleGui.h"
+#include "Track.h"
+#include "WaveTrack.h"
+
+#include <algorithm>
+
+namespace {
+//! Upper bound on columns the dialog will ever display.  Matches the
+//! width of the underlying mask.
+constexpr size_t kMaxDisplayChannels = kPlaybackOutputMaskBits;
+
+//! Scroll unit in pixels for all four sub-canvases.  Must be shared
+//! so scroll-position sync between them is a one-to-one unit mapping.
+constexpr int kScrollUnit = 1;
+
+//! Read the first @p numChannels checkboxes into a PlaybackOutputMask.
+PlaybackOutputMask MaskFromCheckboxes(
+   const std::vector<wxCheckBox*>& checks, size_t numChannels)
+{
+   PlaybackOutputMask mask;
+   const auto cap = std::min(
+      std::min(checks.size(), numChannels), kMaxDisplayChannels);
+   for (size_t i = 0; i < cap; ++i)
+      if (checks[i] && checks[i]->GetValue())
+         mask.set(static_cast<unsigned>(i));
+   return mask;
+}
+
+//! Set the first @p numChannels checkboxes to match a mask.
+void CheckboxesFromMask(
+   const std::vector<wxCheckBox*>& checks,
+   const PlaybackOutputMask& mask, size_t numChannels)
+{
+   const auto cap = std::min(
+      std::min(checks.size(), numChannels), kMaxDisplayChannels);
+   for (size_t i = 0; i < cap; ++i)
+      if (checks[i])
+         checks[i]->SetValue(mask.test(static_cast<unsigned>(i)));
+}
+} // namespace
+
+PlaybackRoutingDialog::PlaybackRoutingDialog(
+   wxWindow *parent, AudacityProject &project, WaveTrack *focusedTrack)
+   : wxDialogWrapper(parent, wxID_ANY,
+                     XO("Playback Routing Matrix"),
+                     wxDefaultPosition, wxDefaultSize,
+                     wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
+   , mProject(project)
+{
+   SetName();
+
+   auto requested = AudioIOPlaybackChannels.ReadWithDefault(2);
+   if (requested < 1)
+      requested = 1;
+   if (requested > static_cast<int>(kMaxDisplayChannels))
+      requested = static_cast<int>(kMaxDisplayChannels);
+   mNumOutputChannels = static_cast<size_t>(requested);
+
+   // Seed rows up front so BuildUI and ComputeInitialSize both see
+   // the track list.
+   auto &tracks = TrackList::Get(mProject);
+   for (auto pTrack : tracks.Any<WaveTrack>()) {
+      TrackRow row;
+      row.track = pTrack;
+      row.originalStoredMask = pTrack->GetPlaybackOutputMask();
+      mRows.push_back(std::move(row));
+   }
+
+   SetClientSize(ComputeInitialSize());
+   BuildUI(focusedTrack);
+}
+
+PlaybackRoutingDialog::~PlaybackRoutingDialog() = default;
+
+wxSize PlaybackRoutingDialog::ComputeInitialSize() const
+{
+   // Rough pixel estimates.  These do not need to match the final
+   // widget sizes exactly -- the matrix is scrollable, so being a
+   // little off just changes how much scrolling the user has to do.
+
+   // Add instruction text + status line + close button padding.
+   constexpr int kChromeVerticalPadding = 170;
+   constexpr int kChromeHorizontalPadding = 40;
+
+   const int contentWidth =
+      mLabelColWidth +
+      static_cast<int>(mNumOutputChannels) * mColumnWidth;
+   const int contentHeight =
+      mHeaderRowHeight +
+      static_cast<int>(mRows.size()) * mRowHeight;
+
+   int w = contentWidth + kChromeHorizontalPadding;
+   int h = contentHeight + kChromeVerticalPadding;
+
+   // Cap at 80% of the display that owns the parent (or the primary
+   // display if we don't have a parent to query).
+   const auto displayIdx = wxDisplay::GetFromWindow(GetParent());
+   const wxDisplay display(displayIdx != wxNOT_FOUND ? displayIdx : 0u);
+   const auto screen = display.GetClientArea();
+   w = std::clamp(w, 480, screen.GetWidth() * 4 / 5);
+   h = std::clamp(h, 320, screen.GetHeight() * 4 / 5);
+   return wxSize(w, h);
+}
+
+void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
+{
+   auto *outer = new wxBoxSizer(wxVERTICAL);
+
+   auto *header = new wxStaticText(this, wxID_ANY,
+      XO("Each checkbox routes a track's audio to the corresponding "
+         "device output channel.\n"
+         "An empty row means the track is silenced (no playback). "
+         "Use Reset to restore identity routing for a row.")
+         .Translation());
+   outer->Add(header, 0, wxEXPAND | wxALL, 8);
+
+   // Empty-project case: offer to create N tracks pre-set to the
+   // playback channel count so the user can plan their routing
+   // before adding actual content.
+   if (mRows.empty()) {
+      const int playChannels =
+         std::max(1, AudioIOPlaybackChannels.Read());
+
+      auto *empty = new wxStaticText(this, wxID_ANY,
+         _("No wave tracks in this project yet.\n\n"
+           "Playback routing is configured per track.  Create "
+           "tracks below to plan your output mapping; each new "
+           "track gets identity routing by default (track 1 -> "
+           "output 1, etc.) which you can customise by re-opening "
+           "this dialog."));
+      outer->Add(empty, 0, wxEXPAND | wxALL, 16);
+
+      auto *form = new wxFlexGridSizer(/*cols*/ 2, /*vgap*/ 8, /*hgap*/ 8);
+      form->Add(new wxStaticText(this, wxID_ANY, _("Number of mono tracks:")),
+         0, wxALIGN_CENTER_VERTICAL);
+      auto *spin = new wxSpinCtrl(this, wxID_ANY,
+         wxString::Format(wxT("%d"), playChannels),
+         wxDefaultPosition, wxSize(96, -1),
+         wxSP_ARROW_KEYS, 1, 128, playChannels);
+      form->Add(spin, 0);
+      outer->Add(form, 0, wxLEFT | wxRIGHT, 24);
+
+      auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
+      btnRow->AddStretchSpacer();
+      auto *createBtn = new wxButton(this, wxID_OK, _("&Create tracks"));
+      btnRow->Add(createBtn, 0, wxRIGHT, 8);
+      btnRow->Add(new wxButton(this, wxID_CANCEL, _("Cancel")), 0);
+      outer->Add(btnRow, 0, wxALL | wxEXPAND, 8);
+
+      Bind(wxEVT_BUTTON, [this, spin](wxCommandEvent&) {
+         const int n = spin->GetValue();
+         auto &tracks = TrackList::Get(mProject);
+         auto &factory = WaveTrackFactory::Get(mProject);
+         const auto fmt = QualitySettings::SampleFormatChoice();
+         const auto rate = ProjectRate::Get(mProject).GetRate();
+
+         PlaybackOutputMask occupiedOut;
+         for (auto pTrack : tracks.Any<WaveTrack>()) {
+            const auto outM = pTrack->GetPlaybackOutputMask();
+            occupiedOut.lo |= outM.lo;  occupiedOut.hi |= outM.hi;
+         }
+         unsigned nextSlot = 0;
+         for (unsigned b = 0; b < kPlaybackOutputMaskBits; ++b) {
+            if (!occupiedOut.test(b)) {
+               nextSlot = b; break;
+            }
+         }
+
+         for (int i = 0; i < n; ++i) {
+            auto t = factory.Create(fmt, rate);
+            t->SetName(tracks.MakeUniqueTrackName(
+               WaveTrack::GetDefaultAudioTrackNamePreference()));
+            tracks.Add(t);
+            const unsigned bit = nextSlot + static_cast<unsigned>(i);
+            if (bit < kPlaybackOutputMaskBits) {
+               if (t->GetPlaybackOutputMask().empty())
+                  t->SetPlaybackOutputMask(
+                     PlaybackOutputMask::Identity(bit, 1));
+            }
+         }
+         ProjectHistory::Get(mProject).PushState(
+            XO("Created tracks for routing"), XO("New Tracks"));
+         EndModal(kRoutingDialogReopenAfterCreate);
+      }, wxID_OK);
+      Bind(wxEVT_BUTTON,
+         [this](wxCommandEvent&) { EndModal(wxID_CANCEL); }, wxID_CANCEL);
+      Bind(wxEVT_CLOSE_WINDOW,
+         [this](wxCloseEvent&) { EndModal(wxID_CANCEL); });
+
+      SetSizer(outer);
+      return;
+   }
+
+   // Notice when tracks route to channels beyond the current device.
+   {
+      std::vector<PlaybackOutputMask> masks;
+      masks.reserve(mRows.size());
+      for (const auto &row : mRows)
+         masks.push_back(row.originalStoredMask);
+      const auto offCount = CountTracksWithBitsAboveDeviceWidth(
+         static_cast<unsigned>(mNumOutputChannels), masks);
+      if (offCount > 0) {
+         auto *notice = new wxStaticText(this, wxID_ANY,
+            wxString::Format(
+               _("Note: %u track(s) route to channels beyond your "
+                 "%u-channel playback device.  Off-device columns "
+                 "are marked with * and will be silent until you "
+                 "switch to a device with more outputs."),
+               offCount,
+               static_cast<unsigned>(mNumOutputChannels)));
+         notice->SetForegroundColour(
+            wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+         outer->Add(notice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
+      }
+   }
+
+   // ----------------- 4-region scroll-synced layout -----------------
+   //
+   // +---------+--------------------+---+
+   // | corner  | header panel       | sp|  topRow (no scrollbars)
+   // +---------+--------------------+---+
+   // | labels  | matrix panel       |Vsb|  bodyRow
+   // |         | (with scrollbars)  |   |
+   // +---------+--------------------+---+
+   // | spacer  | Hsb in matrix      |   |
+   // +---------+--------------------+---+
+   //
+   // The matrix is the only panel that displays its scrollbars;
+   // they sit at its own right and bottom edges and consume ~17px
+   // each from its client area.  To keep header and labels' content
+   // areas aligned with the matrix's content area, we add explicit
+   // spacer cells next to them whose size matches the scrollbar
+   // dimensions.  Without these spacers, labels visually ends 17px
+   // higher than the matrix's last row, which makes the bottom row
+   // of checkboxes appear "below" the labels column.
+   const int kVScrollW =
+      wxSystemSettings::GetMetric(wxSYS_VSCROLL_X);
+   const int kHScrollH =
+      wxSystemSettings::GetMetric(wxSYS_HSCROLL_Y);
+
+   // --- Corner panel (fixed, no scroll, never moves) ---
+   mCornerPanel = new wxPanel(this, wxID_ANY,
+      wxDefaultPosition, wxSize(mLabelColWidth, mHeaderRowHeight),
+      wxBORDER_NONE);
+   mCornerPanel->SetMinSize(wxSize(mLabelColWidth, mHeaderRowHeight));
+   {
+      auto *cornerSz = new wxBoxSizer(wxHORIZONTAL);
+      cornerSz->Add(new wxStaticText(mCornerPanel, wxID_ANY, _("Track")),
+         1, wxALIGN_CENTER_VERTICAL | wxLEFT, 4);
+      mCornerPanel->SetSizer(cornerSz);
+   }
+
+   // --- Header panel (plain wxPanel; children moved on scroll) ---
+   mHeaderPanel = new wxPanel(this, wxID_ANY,
+      wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+   mHeaderPanel->SetMinSize(wxSize(-1, mHeaderRowHeight));
+   for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
+      auto *label = new wxStaticText(mHeaderPanel, wxID_ANY,
+         wxString::Format("%zu", ch + 1),
+         wxPoint(static_cast<int>(ch) * mColumnWidth, 0),
+         wxSize(mColumnWidth, mHeaderRowHeight),
+         wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL);
+      mHeaderLabels.push_back(label);
+   }
+
+   // --- Labels panel (plain wxPanel; children moved on scroll) ---
+   mLabelsPanel = new wxPanel(this, wxID_ANY,
+      wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+   mLabelsPanel->SetMinSize(wxSize(mLabelColWidth, -1));
+
+   // --- Matrix panel (both scrolls visible; drives the others) ---
+   mMatrixPanel = new wxScrolledCanvas(this, wxID_ANY,
+      wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+   mMatrixPanel->SetScrollRate(kScrollUnit, kScrollUnit);
+   auto *matrixSz = new wxBoxSizer(wxVERTICAL);
+   mMatrixPanel->SetSizer(matrixSz);
+
+   // Assemble the layout now that all four panels exist.  The grid
+   // is row-major: top row holds corner+header (no scrollbars), body
+   // row holds labels+matrix (matrix has scrollbars at its own
+   // bottom and right edges).  Spacer cells reserve scrollbar-equal
+   // gaps next to header (right) and labels (bottom) so their
+   // content areas line up exactly with the matrix's content area.
+   auto *topRow = new wxBoxSizer(wxHORIZONTAL);
+   topRow->Add(mCornerPanel, 0);
+   topRow->Add(mHeaderPanel, 1, wxEXPAND);
+   topRow->AddSpacer(kVScrollW);
+
+   auto *labelsCol = new wxBoxSizer(wxVERTICAL);
+   labelsCol->Add(mLabelsPanel, 1, wxEXPAND);
+   labelsCol->AddSpacer(kHScrollH);
+
+   auto *bodyRow = new wxBoxSizer(wxHORIZONTAL);
+   bodyRow->Add(labelsCol, 0, wxEXPAND);
+   bodyRow->Add(mMatrixPanel, 1, wxEXPAND);
+
+   auto *grid = new wxBoxSizer(wxVERTICAL);
+   grid->Add(topRow, 0, wxEXPAND);
+   grid->Add(bodyRow, 1, wxEXPAND);
+
+   // --- Populate labels + matrix rows ---
+   wxWindow *focusTarget = nullptr;
+   for (size_t rowIndex = 0; rowIndex < mRows.size(); ++rowIndex) {
+      auto &row = mRows[rowIndex];
+      const int capturedRow = static_cast<int>(rowIndex);
+
+      // Labels column: track name + Reset button positioned
+      // manually so we can move them ourselves on scroll without
+      // wxScrolledWindow getting in the way.  Logical y is just
+      // rowIndex * mRowHeight; SyncHeaderAndLabelPositions
+      // subtracts the matrix's scroll offset on every scroll/resize.
+      const int rowY = capturedRow * mRowHeight;
+      auto *nameText = new wxStaticText(mLabelsPanel, wxID_ANY,
+         row.track->GetName(),
+         wxPoint(4, rowY),
+         wxSize(mLabelColWidth - 64, mRowHeight),
+         wxST_ELLIPSIZE_END | wxALIGN_CENTER_VERTICAL);
+      auto *resetBtn = new wxButton(mLabelsPanel, wxID_ANY, _("Reset"),
+         wxPoint(mLabelColWidth - 60, rowY + 2),
+         wxSize(56, mRowHeight - 4), wxBU_EXACTFIT);
+      resetBtn->Bind(wxEVT_BUTTON,
+         [this, capturedRow](wxCommandEvent &) {
+            this->OnResetRow(capturedRow);
+         });
+      mLabelRows.push_back(LabelRow{ nameText, resetBtn });
+
+      // Matrix row of checkboxes.  Same fixed-height panel wrapper
+      // for the same reason.
+      auto *rowPanel = new wxPanel(mMatrixPanel, wxID_ANY,
+         wxDefaultPosition,
+         wxSize(static_cast<int>(mNumOutputChannels) * mColumnWidth,
+                mRowHeight));
+      rowPanel->SetMinSize(wxSize(
+         static_cast<int>(mNumOutputChannels) * mColumnWidth,
+         mRowHeight));
+      auto *checkRow = new wxBoxSizer(wxHORIZONTAL);
+      for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
+         auto *check = new wxCheckBox(rowPanel, wxID_ANY,
+            wxEmptyString,
+            wxDefaultPosition, wxSize(mColumnWidth, mRowHeight),
+            wxALIGN_CENTER);
+         check->SetValue(
+            row.originalStoredMask.test(static_cast<unsigned>(ch)));
+         const int capturedCol = static_cast<int>(ch);
+         check->Bind(wxEVT_ENTER_WINDOW,
+            [this, capturedRow, capturedCol](wxMouseEvent &e) {
+               this->UpdateStatus(capturedRow, capturedCol);
+               e.Skip();
+            });
+         check->Bind(wxEVT_SET_FOCUS,
+            [this, capturedRow, capturedCol](wxFocusEvent &e) {
+               this->UpdateStatus(capturedRow, capturedCol);
+               e.Skip();
+            });
+         row.checks.push_back(check);
+         checkRow->Add(check, 0);
+      }
+      rowPanel->SetSizer(checkRow);
+      matrixSz->Add(rowPanel, 0);
+
+      if (row.track == focusedTrack)
+         focusTarget = row.checks.empty() ? nullptr : row.checks[0];
+   }
+
+   // FitInside on the matrix sets its virtual size from the
+   // sizer's MinSize, which is what makes its scrollbars appear
+   // when the rows/columns overflow the panel's client area.
+   // The header and labels are plain wxPanels with manually-
+   // positioned children -- they don't need a virtual size.
+   mMatrixPanel->FitInside();
+
+   outer->Add(grid, 1, wxEXPAND | wxALL, 6);
+
+   // --- Status line ---
+   mStatusText = new wxStaticText(this, wxID_ANY, wxEmptyString,
+      wxDefaultPosition, wxDefaultSize,
+      wxST_NO_AUTORESIZE | wxST_ELLIPSIZE_END);
+   outer->Add(mStatusText, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
+
+   // --- Buttons ---
+   auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
+   auto *resetAllBtn =
+      new wxButton(this, wxID_ANY, _("&Reset all"));
+   resetAllBtn->SetToolTip(
+      _("Clear all rows, then assign identity routing to every row "
+        "in order (track 1 -> output 1, track 2 -> output 2, etc.).  "
+        "Per-row Reset places one row at a time relative to the "
+        "others; Reset all rebuilds the whole matrix."));
+   resetAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+      // Clear first, then walk in row order so each row picks the
+      // lowest free slot relative to the rows above it -- this is
+      // the only way to guarantee a clean identity layout when row
+      // channel widths vary.
+      for (auto &row : mRows)
+         for (auto *cb : row.checks)
+            if (cb) cb->SetValue(false);
+      for (size_t i = 0; i < mRows.size(); ++i)
+         OnResetRow(static_cast<int>(i));
+   });
+   btnRow->Add(resetAllBtn, 0, wxALL, 6);
+
+   auto *clearAllBtn =
+      new wxButton(this, wxID_ANY, _("Cl&ear all"));
+   clearAllBtn->SetToolTip(
+      _("Uncheck every box in every row.  An empty row means the "
+        "track is silent on playback; this lets you start from a "
+        "clean slate before opting tracks back in."));
+   clearAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+      for (auto &row : mRows)
+         for (auto *cb : row.checks)
+            if (cb) cb->SetValue(false);
+   });
+   btnRow->Add(clearAllBtn, 0, wxALL, 6);
+
+   auto *closeBtn = new wxButton(this, wxID_CLOSE, _("&Close"));
+   closeBtn->Bind(wxEVT_BUTTON, &PlaybackRoutingDialog::OnClose, this);
+   closeBtn->SetDefault();
+   btnRow->AddStretchSpacer();
+   btnRow->Add(closeBtn, 0, wxALL, 6);
+   outer->Add(btnRow, 0, wxEXPAND);
+
+   SetSizer(outer);
+
+   // Wire scroll sync last, after all virtual sizes are set.
+   // wxEVT_SCROLLWIN fires for scrollbar interaction; we ALSO need
+   // to sync after wheel / keyboard scrolls, so the easiest catch-all
+   // is to listen for the low-level scroll events on the matrix and
+   // re-read its view start every time.
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_TOP,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_BOTTOM,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_LINEUP,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_LINEDOWN,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_PAGEUP,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_PAGEDOWN,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_THUMBTRACK,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   mMatrixPanel->Bind(wxEVT_SCROLLWIN_THUMBRELEASE,
+      &PlaybackRoutingDialog::OnMatrixScroll, this);
+   // Mouse-wheel scroll fires wxEVT_SCROLLWIN_LINE{UP,DOWN}, already
+   // covered above.  Keyboard arrow-key scroll within the matrix
+   // also triggers SCROLLWIN_*, also covered.
+
+   // Re-fit virtual sizes and force a full redraw whenever the
+   // dialog is resized.  Without this, the labels' virtual height
+   // can lag behind the actual content after a resize, which makes
+   // Scroll() clamp wrong on the next scroll event and leaves
+   // newly-revealed Reset buttons mis-positioned.
+   Bind(wxEVT_SIZE, [this](wxSizeEvent &e) {
+      e.Skip();
+      if (mMatrixPanel) mMatrixPanel->FitInside();
+      // Reposition header and labels children to match the matrix's
+      // (possibly clamped) scroll position after the resize.
+      SyncHeaderAndLabelPositions();
+   });
+
+   if (focusTarget) {
+      int x, y;
+      focusTarget->GetPosition(&x, &y);
+      mMatrixPanel->Scroll(0, y);
+      SyncHeaderAndLabelPositions();
+      focusTarget->SetFocus();
+   }
+}
+
+void PlaybackRoutingDialog::OnMatrixScroll(wxScrollWinEvent &event)
+{
+   event.Skip();
+   SyncHeaderAndLabelPositions();
+}
+
+void PlaybackRoutingDialog::SyncHeaderAndLabelPositions()
+{
+   // Header and labels are plain (non-scrolling) wxPanels.  We
+   // reposition their children to (logical_pos - matrix_scroll).
+   // The wxPanel naturally clips drawing to its bounds, so children
+   // moved off-panel disappear visually without needing scroll
+   // logic.  This avoids the GTK realize/unrealize quirks that
+   // wxScrolledWindow's blit-style scroll triggers on resize.
+   if (!mMatrixPanel)
+      return;
+   int vx = 0, vy = 0;
+   mMatrixPanel->GetViewStart(&vx, &vy);
+
+   for (size_t ch = 0; ch < mHeaderLabels.size(); ++ch) {
+      if (auto *lbl = mHeaderLabels[ch]) {
+         const int x = static_cast<int>(ch) * mColumnWidth - vx;
+         lbl->Move(x, 0);
+      }
+   }
+   for (size_t i = 0; i < mLabelRows.size(); ++i) {
+      const int rowY = static_cast<int>(i) * mRowHeight - vy;
+      if (auto *t = mLabelRows[i].text)
+         t->Move(4, rowY);
+      if (auto *b = mLabelRows[i].resetBtn)
+         b->Move(mLabelColWidth - 60, rowY + 2);
+   }
+}
+
+void PlaybackRoutingDialog::UpdateStatus(int rowIndex, int colIndex)
+{
+   if (!mStatusText)
+      return;
+   if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= mRows.size() ||
+       colIndex < 0 ||
+       static_cast<size_t>(colIndex) >= mNumOutputChannels)
+   {
+      mStatusText->SetLabel(wxEmptyString);
+      return;
+   }
+   const auto &row = mRows[rowIndex];
+   const wxString name = row.track ? row.track->GetName() : wxString{};
+   mStatusText->SetLabel(wxString::Format(
+      _("Track %d ('%s'), output %d"),
+      rowIndex + 1, name, colIndex + 1));
+}
+
+void PlaybackRoutingDialog::OnResetRow(int rowIndex)
+{
+   if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= mRows.size())
+      return;
+   auto &row = mRows[rowIndex];
+   const auto channels = row.track ? row.track->NChannels() : size_t{0};
+   auto identity = PlaybackOutputMask::Identity(
+      static_cast<unsigned>(rowIndex), static_cast<unsigned>(channels));
+   CheckboxesFromMask(row.checks, identity, mNumOutputChannels);
+}
+
+int PlaybackRoutingDialog::ApplyIntents()
+{
+   int changed = 0;
+   for (auto &row : mRows) {
+      if (!row.track)
+         continue;
+      // Preserve any bits set above the device width -- the user
+      // cannot see them, but we don't want to silently clear them.
+      auto newMask = row.originalStoredMask;
+      for (size_t ch = 0; ch < mNumOutputChannels &&
+                           ch < kMaxDisplayChannels; ++ch)
+         newMask.clear(static_cast<unsigned>(ch));
+      const auto visibleMask =
+         MaskFromCheckboxes(row.checks, mNumOutputChannels);
+      newMask.lo |= visibleMask.lo;
+      newMask.hi |= visibleMask.hi;
+
+      if (newMask != row.originalStoredMask) {
+         row.track->SetPlaybackOutputMask(newMask);
+         row.originalStoredMask = newMask;
+         ++changed;
+      }
+   }
+   return changed;
+}
+
+void PlaybackRoutingDialog::OnClose(wxCommandEvent &)
+{
+   const int changed = ApplyIntents();
+   // Routing changes are user-visible structural state -- push a
+   // single undo step covering all rows the dialog modified, so
+   // Ctrl+Z reverts the whole batch.  The full project state
+   // (including each WaveTrack's mask attachment) is snapshotted
+   // by UndoManager, so undo restores the prior masks even though
+   // we hold no explicit before/after vector here.
+   if (changed > 0) {
+      ProjectHistory::Get(mProject).PushState(
+         (changed == 1)
+            ? XO("Changed playback routing for 1 track")
+            : XO("Changed playback routing for %d tracks").Format(changed),
+         XO("Routing"));
+   }
+   EndModal(wxID_OK);
+}

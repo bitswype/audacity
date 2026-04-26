@@ -23,6 +23,7 @@ Paul Licameli split from TrackPanel.cpp
 #include "ProjectHistory.h"
 #include "../../../../ProjectWindows.h"
 #include "../../../../RefreshCode.h"
+#include "../../../../toolbars/PlaybackRoutingDialog.h"
 #include "ShuttleGui.h"
 #include "SyncLock.h"
 #include "Theme.h"
@@ -132,6 +133,9 @@ enum {
    OnSwapChannelsID,
    OnSplitStereoID,
    OnSplitStereoMonoID,
+
+   // bitswype fork: opens the Playback Routing Matrix dialog
+   OnPlaybackRoutingID,
 
    ChannelMenuID,
 
@@ -524,6 +528,9 @@ struct WaveTrackMenuTable : WaveTrackPopupMenuTable
    void OnSwapChannels(wxCommandEvent & event);
    void OnSplitStereo(wxCommandEvent & event);
    void OnSplitStereoMono(wxCommandEvent & event);
+
+   // bitswype fork: open the Playback Routing Matrix dialog
+   void OnPlaybackRouting(wxCommandEvent & event);
 };
 
 WaveTrackMenuTable &WaveTrackMenuTable::Instance()
@@ -677,6 +684,13 @@ BEGIN_POPUP_MENU(WaveTrackMenuTable)
       AppendItem( "SplitToMono", OnSplitStereoMonoID,
          XXO("Split Stereo to Mo&no"), POPUP_MENU_FN( OnSplitStereoMono ),
          enableSplitStereo );
+   EndSection();
+
+   // bitswype fork: per-track Playback Routing Matrix launcher
+   BeginSection( "Routing" );
+      AppendItem( "PlaybackRouting", OnPlaybackRoutingID,
+         XXO("Playback &Routing..."),
+         POPUP_MENU_FN( OnPlaybackRouting ) );
    EndSection();
 
    BeginSection( "Format" );
@@ -930,6 +944,18 @@ void WaveTrackMenuTable::OnSplitStereoMono(wxCommandEvent &)
 
    using namespace RefreshCode;
    mpData->result = RefreshAll | FixScrollbars;
+}
+
+//! bitswype fork: open the Playback Routing Matrix dialog, focused on
+//! the right-clicked wave track so the user can configure where its
+//! audio goes.
+void WaveTrackMenuTable::OnPlaybackRouting(wxCommandEvent &)
+{
+   auto &track = static_cast<WaveTrack&>(mpData->track);
+   AudacityProject *const project = &mpData->project;
+   PlaybackRoutingDialog dlg(
+      &GetProjectFrame(*project), *project, &track);
+   dlg.ShowModal();
 }
 
 PopupMenuTable *WaveTrackControls::GetMenuExtension(Track * pTrack)
