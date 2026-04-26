@@ -170,6 +170,21 @@ TEST_CASE("TestToneGenerator: Sine above Nyquist emits silence",
    REQUIRE(PeakAbs(buf) == 0.0f);
 }
 
+TEST_CASE("TestToneGenerator: Sine at exactly Nyquist is silenced",
+   "[testtone]")
+{
+   // sin(phi + k*pi) alternates +/- with no audible signal -- a
+   // generator that didn't short-circuit here would emit a
+   // degenerate two-sample square at full level.
+   TestToneGenerator gen;
+   gen.Configure(TestToneGenerator::Type::Sine,
+      /*freq*/ 24000.0, /*levelDb*/ 0.0, /*rate*/ 48000.0);
+   REQUIRE(gen.ExceedsNyquist());
+   std::vector<float> buf(2048);
+   gen.Render(buf.data(), buf.size());
+   REQUIRE(PeakAbs(buf) == 0.0f);
+}
+
 TEST_CASE("TestToneGenerator: Pink noise has nonzero RMS and bounded peak",
    "[testtone]")
 {

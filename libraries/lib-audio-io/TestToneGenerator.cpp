@@ -65,7 +65,15 @@ void TestToneGenerator::Reset()
 
 bool TestToneGenerator::ExceedsNyquist() const
 {
-   return mType == Type::Sine && mFrequencyHz > mSampleRate * 0.5;
+   // Use >= so a sine at exactly fs/2 also short-circuits to
+   // silence.  At fs/2 a phase-accumulator sine emits sin(phi),
+   // sin(phi+pi), sin(phi+2pi), ... -- a degenerate two-sample
+   // alternation no DAC can reproduce faithfully and that the
+   // user almost certainly didn't want.  The strict > variant
+   // also let the test "Sine matches its configured frequency"
+   // miss this edge case for any test that happened to land on
+   // Nyquist exactly.
+   return mType == Type::Sine && mFrequencyHz >= mSampleRate * 0.5;
 }
 
 float TestToneGenerator::NextSineSample()
