@@ -117,17 +117,22 @@ TEST_CASE("TestToneGenerator: Sine matches its configured frequency",
       const double mag = CorrelateSine(
          std::vector<float>(buf.begin() + 1024, buf.end() - 1024),
          freq, kRate);
-      // Expected magnitude is ~1.0 for a perfectly aligned sine.
-      // Off-by-a-factor would be much smaller; use a wide bound to
-      // tolerate phase / windowing slack.
-      REQUIRE(mag > 0.7);
-      // And nothing at, say, 7x the configured frequency.
+      // A pure sine should hit ~1.0 against its own frequency.
+      // 0.95 is tight enough to fail anything but tiny phase /
+      // windowing slack, where the prior 0.7 bound would have
+      // passed amplitude-rolloff or shape bugs (e.g. a sawtooth
+      // at the right period).
+      INFO("freq=" << freq << " mag=" << mag
+         << " expected~" << expected);
+      REQUIRE(mag > 0.95);
+      // And nothing at, say, 7x the configured frequency.  A real
+      // sine puts <0.05 of its energy into a non-harmonic
+      // off-frequency probe.
       const double bogus = CorrelateSine(
          std::vector<float>(buf.begin() + 1024, buf.end() - 1024),
          freq * 7.13, kRate);
-      REQUIRE(bogus < mag * 0.2);
-      INFO("freq=" << freq << " mag=" << mag << " bogus=" << bogus
-         << " expected~" << expected);
+      INFO("bogus=" << bogus);
+      REQUIRE(bogus < 0.05);
    }
 }
 
