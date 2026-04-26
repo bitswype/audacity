@@ -787,14 +787,29 @@ void AudioSetupToolBar::OnSettings(wxCommandEvent& event)
 
 void AudioSetupToolBar::OnPlaybackRouting(wxCommandEvent&)
 {
-   PlaybackRoutingDialog dlg(&GetProjectFrame(mProject), mProject);
-   dlg.ShowModal();
+   // The dialog's empty-state path returns kReopenAfterCreate
+   // (wxID_HIGHEST + 1) after creating tracks, signalling that we
+   // should re-open with the just-populated track list so the user
+   // can configure the freshly-created masks immediately.  All other
+   // exits return wxID_OK / wxID_CANCEL, which break the loop.
+   constexpr int kReopenAfterCreate = wxID_HIGHEST + 1;
+   while (true) {
+      PlaybackRoutingDialog dlg(&GetProjectFrame(mProject), mProject);
+      const int code = dlg.ShowModal();
+      if (code != kReopenAfterCreate)
+         break;
+   }
 }
 
 void AudioSetupToolBar::OnRecordingRouting(wxCommandEvent&)
 {
-   RecordingRoutingDialog dlg(&GetProjectFrame(mProject), mProject);
-   dlg.ShowModal();
+   constexpr int kReopenAfterCreate = wxID_HIGHEST + 1;
+   while (true) {
+      RecordingRoutingDialog dlg(&GetProjectFrame(mProject), mProject);
+      const int code = dlg.ShowModal();
+      if (code != kReopenAfterCreate)
+         break;
+   }
 }
 
 void AudioSetupToolBar::OnChannelTestTone(wxCommandEvent&)

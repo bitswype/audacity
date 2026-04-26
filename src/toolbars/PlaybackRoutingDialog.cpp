@@ -10,17 +10,22 @@
 
 #include <wx/button.h>
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/dcclient.h>
 #include <wx/display.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
+#include <wx/spinctrl.h>
 #include <wx/stattext.h>
 
 #include "AudioIOBase.h"        // for AudioIOPlaybackChannels
+#include "PlaybackInputMask.h"
 #include "PlaybackOutputMask.h"
 #include "Project.h"
 #include "ProjectHistory.h"
+#include "ProjectRate.h"
+#include "QualitySettings.h"
 #include "ShuttleGui.h"
 #include "Track.h"
 #include "WaveTrack.h"
@@ -154,6 +159,97 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          "Use Reset to restore identity routing for a row.")
          .Translation());
    outer->Add(header, 0, wxEXPAND | wxALL, 8);
+
+   // Empty-project case: see RecordingRoutingDialog for the
+   // rationale.  Same idea here -- offer to create N tracks
+   // pre-set to the playback channel count so the user can plan
+   // their playback routing before adding actual content.
+   if (mRows.empty()) {
+      const int playChannels =
+         std::max(1, AudioIOPlaybackChannels.Read());
+
+      auto *empty = new wxStaticText(this, wxID_ANY,
+         _("No wave tracks in this project yet.\n\n"
+           "Playback routing is configured per track.  Create "
+           "tracks below to plan your output mapping; each new "
+           "track gets identity routing by default (track 1 -> "
+           "output 1, etc.) which you can customise by re-opening "
+           "this dialog.\n\n"
+           "To verify hardware or the routing engine without "
+           "creating tracks, use Audio Setup > Channel Test Tone."));
+      outer->Add(empty, 0, wxEXPAND | wxALL, 16);
+
+      auto *form = new wxFlexGridSizer(/*cols*/ 2, /*vgap*/ 8, /*hgap*/ 8);
+      form->Add(new wxStaticText(this, wxID_ANY, _("Number of mono tracks:")),
+         0, wxALIGN_CENTER_VERTICAL);
+      auto *spin = new wxSpinCtrl(this, wxID_ANY,
+         wxString::Format(wxT("%d"), playChannels),
+         wxDefaultPosition, wxSize(96, -1),
+         wxSP_ARROW_KEYS, 1, 128, playChannels);
+      form->Add(spin, 0);
+      outer->Add(form, 0, wxLEFT | wxRIGHT, 24);
+
+      auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
+      btnRow->AddStretchSpacer();
+      auto *createBtn = new wxButton(this, wxID_OK, _("&Create tracks"));
+      btnRow->Add(createBtn, 0, wxRIGHT, 8);
+      btnRow->Add(new wxButton(this, wxID_CANCEL, _("Cancel")), 0);
+      outer->Add(btnRow, 0, wxALL | wxEXPAND, 8);
+
+      // See RecordingRoutingDialog for the why of this dance.
+      constexpr int kReopenAfterCreate = wxID_HIGHEST + 1;
+
+      Bind(wxEVT_BUTTON, [this, spin](wxCommandEvent&) {
+         const int n = spin->GetValue();
+         auto &tracks = TrackList::Get(mProject);
+         auto &factory = WaveTrackFactory::Get(mProject);
+         const auto fmt = QualitySettings::SampleFormatChoice();
+         const auto rate = ProjectRate::Get(mProject).GetRate();
+
+         PlaybackInputMask occupiedIn;
+         PlaybackOutputMask occupiedOut;
+         for (auto pTrack : tracks.Any<WaveTrack>()) {
+            const auto inM = pTrack->GetPlaybackInputMask();
+            occupiedIn.lo |= inM.lo;  occupiedIn.hi |= inM.hi;
+            const auto outM = pTrack->GetPlaybackOutputMask();
+            occupiedOut.lo |= outM.lo;  occupiedOut.hi |= outM.hi;
+         }
+         unsigned nextSlot = 0;
+         for (unsigned b = 0; b < kPlaybackOutputMaskBits; ++b) {
+            if (!occupiedIn.test(b) && !occupiedOut.test(b)) {
+               nextSlot = b; break;
+            }
+         }
+
+         for (int i = 0; i < n; ++i) {
+            auto t = factory.Create(fmt, rate);
+            t->SetName(tracks.MakeUniqueTrackName(
+               WaveTrack::GetDefaultAudioTrackNamePreference()));
+            tracks.Add(t);
+            // Force identity assignment.  See RecordingRoutingDialog
+            // for the race-with-listener rationale.
+            const unsigned bit = nextSlot + static_cast<unsigned>(i);
+            if (bit < kPlaybackOutputMaskBits) {
+               if (t->GetPlaybackOutputMask().empty())
+                  t->SetPlaybackOutputMask(
+                     PlaybackOutputMask::Identity(bit, 1));
+               if (t->GetPlaybackInputMask().empty())
+                  t->SetPlaybackInputMask(
+                     PlaybackInputMask::Identity(bit, 1));
+            }
+         }
+         ProjectHistory::Get(mProject).PushState(
+            XO("Created tracks for routing"), XO("New Tracks"));
+         EndModal(kReopenAfterCreate);
+      }, wxID_OK);
+      Bind(wxEVT_BUTTON,
+         [this](wxCommandEvent&) { EndModal(wxID_CANCEL); }, wxID_CANCEL);
+      Bind(wxEVT_CLOSE_WINDOW,
+         [this](wxCloseEvent&) { EndModal(wxID_CANCEL); });
+
+      SetSizer(outer);
+      return;
+   }
 
    // If any tracks reference channels beyond the current playback
    // device, surface that explicitly so the user knows why some
@@ -361,6 +457,39 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
 
    // --- Buttons ---
    auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
+   auto *resetAllBtn =
+      new wxButton(this, wxID_ANY, _("&Reset all"));
+   resetAllBtn->SetToolTip(
+      _("Clear all rows, then assign identity routing to every row "
+        "in order (track 1 -> output 1, track 2 -> output 2, etc.).  "
+        "Per-row Reset places one row at a time relative to the "
+        "others; Reset all rebuilds the whole matrix."));
+   resetAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+      // Clear first, then walk in row order so each row picks the
+      // lowest free slot relative to the rows above it -- this is
+      // the only way to guarantee a clean identity layout when row
+      // channel widths vary.
+      for (auto &row : mRows)
+         for (auto *cb : row.checks)
+            if (cb) cb->SetValue(false);
+      for (size_t i = 0; i < mRows.size(); ++i)
+         OnResetRow(static_cast<int>(i));
+   });
+   btnRow->Add(resetAllBtn, 0, wxALL, 6);
+
+   auto *clearAllBtn =
+      new wxButton(this, wxID_ANY, _("Cl&ear all"));
+   clearAllBtn->SetToolTip(
+      _("Uncheck every box in every row.  An empty row means the "
+        "track is silent on playback; this lets you start from a "
+        "clean slate before opting tracks back in."));
+   clearAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+      for (auto &row : mRows)
+         for (auto *cb : row.checks)
+            if (cb) cb->SetValue(false);
+   });
+   btnRow->Add(clearAllBtn, 0, wxALL, 6);
+
    auto *closeBtn = new wxButton(this, wxID_CLOSE, _("&Close"));
    closeBtn->Bind(wxEVT_BUTTON, &PlaybackRoutingDialog::OnClose, this);
    closeBtn->SetDefault();

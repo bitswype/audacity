@@ -10,17 +10,21 @@
 
 #include <wx/button.h>
 #include <wx/checkbox.h>
+#include <wx/choice.h>
 #include <wx/dcclient.h>
 #include <wx/display.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
+#include <wx/spinctrl.h>
 #include <wx/stattext.h>
 
 #include "AudioIOBase.h"        // for AudioIORecordChannels
 #include "PlaybackInputMask.h"
 #include "Project.h"
 #include "ProjectHistory.h"
+#include "ProjectRate.h"
+#include "QualitySettings.h"
 #include "ShuttleGui.h"
 #include "Track.h"
 #include "WaveTrack.h"
@@ -156,6 +160,120 @@ void RecordingRoutingDialog::BuildUI(WaveTrack *focusedTrack)
          "Use Reset to restore identity routing for a row.")
          .Translation());
    outer->Add(header, 0, wxEXPAND | wxALL, 8);
+
+   // Empty-project case: recording routing is per-track, so a blank
+   // project has nothing to configure.  Rather than a dead end,
+   // offer to create N tracks (defaulting to the device's recording
+   // channel count) so the user can plan a 16-input layout BEFORE
+   // ever hitting Record.  After creation the dialog closes; the
+   // user re-opens it to configure the masks of the freshly-created
+   // tracks.  (A future improvement could rebuild the dialog
+   // in-place, but close+reopen is functionally equivalent and
+   // keeps the empty-state code self-contained.)
+   if (mRows.empty()) {
+      const int recordChannels =
+         std::max(1, AudioIORecordChannels.Read());
+
+      auto *empty = new wxStaticText(this, wxID_ANY,
+         _("No wave tracks in this project yet.\n\n"
+           "Recording routing is configured per track.  Create "
+           "tracks below to plan your input mapping; each new "
+           "track gets identity routing by default (track 1 takes "
+           "input 1, etc.) which you can customise by re-opening "
+           "this dialog."));
+      outer->Add(empty, 0, wxEXPAND | wxALL, 16);
+
+      // Mono only.  Routing-matrix recording is per-channel by
+      // design: each device input maps to one track.  A stereo
+      // option here would be confusing (Number of tracks vs Number
+      // of channels) and a user who wants stereo recording can
+      // create stereo tracks via Tracks > Add New afterward.
+      auto *form = new wxFlexGridSizer(/*cols*/ 2, /*vgap*/ 8, /*hgap*/ 8);
+      form->Add(new wxStaticText(this, wxID_ANY, _("Number of mono tracks:")),
+         0, wxALIGN_CENTER_VERTICAL);
+      auto *spin = new wxSpinCtrl(this, wxID_ANY,
+         wxString::Format(wxT("%d"), recordChannels),
+         wxDefaultPosition, wxSize(96, -1),
+         wxSP_ARROW_KEYS, 1, 128, recordChannels);
+      form->Add(spin, 0);
+      outer->Add(form, 0, wxLEFT | wxRIGHT, 24);
+
+      auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
+      btnRow->AddStretchSpacer();
+      auto *createBtn = new wxButton(this, wxID_OK, _("&Create tracks"));
+      btnRow->Add(createBtn, 0, wxRIGHT, 8);
+      btnRow->Add(new wxButton(this, wxID_CANCEL, _("Cancel")), 0);
+      outer->Add(btnRow, 0, wxALL | wxEXPAND, 8);
+
+      // Use a custom return code to signal "tracks were just
+      // created -- caller should reopen the dialog so the matrix
+      // can show their masks".  wxID_OK is also returned on normal
+      // Close from the matrix path, so we use a distinct value.
+      constexpr int kReopenAfterCreate = wxID_HIGHEST + 1;
+
+      Bind(wxEVT_BUTTON, [this, spin](wxCommandEvent&) {
+         const int n = spin->GetValue();
+         auto &tracks = TrackList::Get(mProject);
+         auto &factory = WaveTrackFactory::Get(mProject);
+         const auto fmt = QualitySettings::SampleFormatChoice();
+         const auto rate = ProjectRate::Get(mProject).GetRate();
+
+         // Snapshot already-occupied input/output bits so we extend
+         // identity routing past any pre-existing tracks (this branch
+         // only runs on an empty project, but the helper logic is
+         // robust against the future case where it might not be).
+         PlaybackInputMask occupiedIn;
+         PlaybackOutputMask occupiedOut;
+         for (auto pTrack : tracks.Any<WaveTrack>()) {
+            const auto inM = pTrack->GetPlaybackInputMask();
+            occupiedIn.lo |= inM.lo;  occupiedIn.hi |= inM.hi;
+            const auto outM = pTrack->GetPlaybackOutputMask();
+            occupiedOut.lo |= outM.lo;  occupiedOut.hi |= outM.hi;
+         }
+         unsigned nextSlot = 0;
+         for (unsigned b = 0; b < kPlaybackInputMaskBits; ++b) {
+            if (!occupiedIn.test(b) && !occupiedOut.test(b)) {
+               nextSlot = b; break;
+            }
+         }
+
+         for (int i = 0; i < n; ++i) {
+            auto t = factory.Create(fmt, rate);
+            t->SetName(tracks.MakeUniqueTrackName(
+               WaveTrack::GetDefaultAudioTrackNamePreference()));
+            tracks.Add(t);
+            // Force identity routing on both input and output sides.
+            // The PlaybackRoutingListener also tries to do this on
+            // ADDITION, but its dispatch can race the auto-reopen of
+            // the dialog, leaving the matrix appearing empty until a
+            // second open.  Setting masks here makes the result
+            // visible immediately.  Idempotent w.r.t. the listener.
+            const unsigned bit = nextSlot + static_cast<unsigned>(i);
+            if (bit < kPlaybackInputMaskBits) {
+               if (t->GetPlaybackInputMask().empty())
+                  t->SetPlaybackInputMask(
+                     PlaybackInputMask::Identity(bit, 1));
+               if (t->GetPlaybackOutputMask().empty())
+                  t->SetPlaybackOutputMask(
+                     PlaybackOutputMask::Identity(bit, 1));
+            }
+         }
+         ProjectHistory::Get(mProject).PushState(
+            XO("Created tracks for routing"), XO("New Tracks"));
+         EndModal(kReopenAfterCreate);
+      }, wxID_OK);
+      // Cancel and the X both end the modal loop with CANCEL.  We
+      // bind explicitly because the dialog already has its own
+      // event-table handling that, in the matrix path, would
+      // otherwise process these events and skip the modal exit.
+      Bind(wxEVT_BUTTON,
+         [this](wxCommandEvent&) { EndModal(wxID_CANCEL); }, wxID_CANCEL);
+      Bind(wxEVT_CLOSE_WINDOW,
+         [this](wxCloseEvent&) { EndModal(wxID_CANCEL); });
+
+      SetSizer(outer);
+      return;
+   }
 
    // If any tracks reference channels beyond the current playback
    // device, surface that explicitly so the user knows why some
@@ -363,6 +481,35 @@ void RecordingRoutingDialog::BuildUI(WaveTrack *focusedTrack)
 
    // --- Buttons ---
    auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
+   auto *resetAllBtn =
+      new wxButton(this, wxID_ANY, _("&Reset all"));
+   resetAllBtn->SetToolTip(
+      _("Clear all rows, then assign identity routing to every row "
+        "in order (track 1 takes input 1, track 2 takes input 2, "
+        "etc.).  Useful for restoring a clean per-channel layout "
+        "after experimenting."));
+   resetAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+      for (auto &row : mRows)
+         for (auto *cb : row.checks)
+            if (cb) cb->SetValue(false);
+      for (size_t i = 0; i < mRows.size(); ++i)
+         OnResetRow(static_cast<int>(i));
+   });
+   btnRow->Add(resetAllBtn, 0, wxALL, 6);
+
+   auto *clearAllBtn =
+      new wxButton(this, wxID_ANY, _("Cl&ear all"));
+   clearAllBtn->SetToolTip(
+      _("Uncheck every box in every row.  An empty row means the "
+        "track is not a recording target; this lets you start from "
+        "a clean slate before opting tracks back in."));
+   clearAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
+      for (auto &row : mRows)
+         for (auto *cb : row.checks)
+            if (cb) cb->SetValue(false);
+   });
+   btnRow->Add(clearAllBtn, 0, wxALL, 6);
+
    auto *closeBtn = new wxButton(this, wxID_CLOSE, _("&Close"));
    closeBtn->Bind(wxEVT_BUTTON, &RecordingRoutingDialog::OnClose, this);
    closeBtn->SetDefault();
