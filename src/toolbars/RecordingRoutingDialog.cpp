@@ -240,12 +240,15 @@ void RecordingRoutingDialog::BuildUI(WaveTrack *focusedTrack)
             t->SetName(tracks.MakeUniqueTrackName(
                WaveTrack::GetDefaultAudioTrackNamePreference()));
             tracks.Add(t);
-            // Force identity routing on both input and output sides.
-            // The PlaybackRoutingListener also tries to do this on
-            // ADDITION, but its dispatch can race the auto-reopen of
-            // the dialog, leaving the matrix appearing empty until a
-            // second open.  Setting masks here makes the result
-            // visible immediately.  Idempotent w.r.t. the listener.
+            // Set identity routing on both input and output sides.
+            // The PlaybackRoutingListener also assigns identity on
+            // TrackList::ADDITION; upstream commit 7cd2889fc made
+            // that publish synchronously, so the listener now fires
+            // before our next iteration and the explicit set below
+            // is redundant.  We keep it as belt-and-suspenders --
+            // the .empty() guard makes it idempotent w.r.t. the
+            // listener, and a future upstream regression of the
+            // deferred-publish behaviour wouldn't break us.
             const unsigned bit = nextSlot + static_cast<unsigned>(i);
             if (bit < kPlaybackInputMaskBits) {
                if (t->GetPlaybackInputMask().empty())

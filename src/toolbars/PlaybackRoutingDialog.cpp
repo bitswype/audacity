@@ -223,8 +223,11 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
             t->SetName(tracks.MakeUniqueTrackName(
                WaveTrack::GetDefaultAudioTrackNamePreference()));
             tracks.Add(t);
-            // Force identity assignment.  See RecordingRoutingDialog
-            // for the race-with-listener rationale.
+            // Set identity routing here as belt-and-suspenders.
+            // See RecordingRoutingDialog for the full rationale --
+            // since upstream 7cd2889fc TrackList::ADDITION fires
+            // synchronously, so the PlaybackRoutingListener
+            // already sets these before this branch runs.
             const unsigned bit = nextSlot + static_cast<unsigned>(i);
             if (bit < kPlaybackOutputMaskBits) {
                if (t->GetPlaybackOutputMask().empty())
