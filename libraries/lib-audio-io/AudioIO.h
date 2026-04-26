@@ -380,6 +380,13 @@ public:
    //! callback fills it via RouteTrackSamples then interleaves into
    //! the PortAudio output buffer.  Unused in DirectHW mode.
    std::vector<std::vector<float>> mTestToneOutBufs;
+   //! Pre-sized pointer array used by RouteTrackSamples in
+   //! ThroughMatrix mode.  Same length as mTestToneOutBufs.  Sized
+   //! once in StartTestTone instead of being constructed every
+   //! audio callback (the prior code did `std::vector<float*>(N)`
+   //! per callback, which heap-allocates -- not safe under the
+   //! audio-callback no-allocate rule).
+   std::vector<float*> mTestToneDstPtrs;
 
    std::vector<std::unique_ptr<Mixer>> mPlaybackMixers;
 

@@ -919,6 +919,12 @@ bool AudioIO::StartTestTone(const TestToneRequest& request,
    mTestToneSrcBuf.assign(kInitialFrames, 0.0f);
    mTestToneOutBufs.assign(mNumPlaybackChannels,
       std::vector<float>(kInitialFrames, 0.0f));
+   // Pre-size the destination-pointer array used by ThroughMatrix
+   // mode so RouteTrackSamples can be called without allocating
+   // inside the audio callback.  Re-pointed every call to track
+   // mTestToneOutBufs's data() since vector reallocation can move
+   // the underlying storage.
+   mTestToneDstPtrs.assign(mNumPlaybackChannels, nullptr);
 
    // Publish the request snapshot, then flip the active flag.  Order
    // matters: callback gates on mTestToneActive, so the snapshot must
@@ -985,6 +991,8 @@ void AudioIO::StopTestTone()
    mTestToneSrcBuf.shrink_to_fit();
    mTestToneOutBufs.clear();
    mTestToneOutBufs.shrink_to_fit();
+   mTestToneDstPtrs.clear();
+   mTestToneDstPtrs.shrink_to_fit();
 }
 
 int AudioIO::StartStream(const TransportSequences &sequences,
@@ -3430,9 +3438,14 @@ void AudioIoCallback::FillTestToneOutputBuffer(
       for (auto& buf : mTestToneOutBufs)
          std::fill_n(buf.begin(), framesPerBuffer, 0.0f);
 
-      std::vector<float*> dstPtrs(mNumPlaybackChannels);
+      // Re-point mTestToneDstPtrs each call: the inner buffers may
+      // have been resize()d above (cf. tech-debt note) which can
+      // move their data() under us.  No allocation here -- the
+      // outer vector was sized in StartTestTone.
+      if (mTestToneDstPtrs.size() < mNumPlaybackChannels)
+         mTestToneDstPtrs.resize(mNumPlaybackChannels);
       for (size_t n = 0; n < mNumPlaybackChannels; ++n)
-         dstPtrs[n] = mTestToneOutBufs[n].data();
+         mTestToneDstPtrs[n] = mTestToneOutBufs[n].data();
       float* srcPtr = mTestToneSrcBuf.data();
       float* const* srcPtrs = &srcPtr;
 
@@ -3445,7 +3458,7 @@ void AudioIoCallback::FillTestToneOutputBuffer(
          /*samplesAvailable*/ framesPerBuffer,
          /*getChannelVolume*/ [](int) { return 1.0f; },
          srcPtrs,
-         dstPtrs.data());
+         mTestToneDstPtrs.data());
 
       const size_t devCh = mDevicePlaybackChannels;
       for (unsigned ch = 0; ch < mNumPlaybackChannels; ++ch) {
