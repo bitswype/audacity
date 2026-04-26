@@ -336,10 +336,16 @@ TestToneRequest ChannelTestToneDialog::MakeRequest() const
    default: r.toneType = TestToneGenerator::Type::Sine; break;
    }
 
+   // Wrap the wxT literals in wxString to make the conditional
+   // expression's type unambiguous to MSVC -- GCC tolerates the
+   // implicit conversion from wxString to const wchar_t* but MSVC
+   // sees both branches and refuses to pick.
    r.frequencyHz = ParseDouble(
-      mFreqText ? mFreqText->GetValue() : wxT("1000.0"), 1000.0);
+      mFreqText ? mFreqText->GetValue() : wxString(wxT("1000.0")),
+      1000.0);
    r.levelDb = ParseDouble(
-      mLevelText ? mLevelText->GetValue() : wxT("-20.0"), -20.0);
+      mLevelText ? mLevelText->GetValue() : wxString(wxT("-20.0")),
+      -20.0);
 
    PlaybackOutputMask mask;
    for (size_t i = 0; i < mChannelChecks.size(); ++i) {
