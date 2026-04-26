@@ -31,8 +31,37 @@
 
 #include <algorithm>
 #include <cstdlib>
+#include <type_traits>
 
 namespace {
+
+// Compile-time guard against the MSVC C2445 ternary regression that
+// the saturn build hit in commit adcac8dab.  If a future refactor
+// reverts to the natural-looking
+//
+//   ptr ? ptr->GetValue() : wxT("default")
+//
+// pattern, the literal arm has type `const wchar_t[N]` while the
+// member arm has type `wxString` -- GCC and Clang implicitly
+// convert between the two and pick wxString as the common type, but
+// MSVC sees multiple viable conversions and refuses to deduce
+// (C2445).  The wrapped form below is unambiguous on every
+// compiler.
+//
+// This guard is here, not in the call site, because the bug only
+// surfaces at compile time; if it ever does, the compiler will
+// point at the call site directly with a clear error.  The
+// guard's job is to fail loudly during code review or CI if
+// anyone reaches for the wxT-bare pattern again.
+static_assert(std::is_same_v<
+   decltype(true
+      ? std::declval<wxString>()
+      : wxString(wxT("default"))),
+   wxString>,
+   "wxString ternary pattern: wrap literal arms in wxString(...) "
+   "to avoid MSVC C2445 ambiguous-conditional errors.  See "
+   "ChannelTestToneDialog.cpp:MakeRequest for the live use.");
+
 constexpr size_t kMaxDisplayChannels = kPlaybackOutputMaskBits;
 //! Columns in the channel checkbox grid.  16 fits the typical
 //! routing-matrix width on a 1280-wide display; the dialog scrolls
