@@ -934,6 +934,12 @@ bool AudioIO::StartTestTone(const TestToneRequest& request,
       mTestToneActive.store(false, std::memory_order_relaxed);
       Pa_CloseStream(mPortStreamV19);
       mPortStreamV19 = nullptr;
+      // StartPortAudioStream installed mOwningProject and only
+      // releases it when StartPortAudioStream itself fails.  We are
+      // past that point but the stream never started -- release the
+      // project ourselves so a retry doesn't trip
+      // SetOwningProject's already-owned assertion.
+      ResetOwningProject();
       return false;
    }
 
