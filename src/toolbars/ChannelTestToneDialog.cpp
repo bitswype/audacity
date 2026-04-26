@@ -491,18 +491,39 @@ void ChannelTestToneDialog::StartCycle()
    // Snapshot the currently checked channels so the cycle order is
    // stable even if the user touches the grid mid-cycle.  Bits past
    // the device's reachable count are filtered out so we don't dwell
-   // silently on a bit that produces no sound.
+   // silently on a bit that produces no sound; count them so we can
+   // surface a warning instead of dropping silently.
    mCycleBits.clear();
-   for (size_t i = 0; i < mChannelChecks.size() && i < mNumDeviceChannels;
-        ++i)
-   {
-      if (mChannelChecks[i] && mChannelChecks[i]->GetValue())
+   unsigned offDeviceSkipped = 0;
+   for (size_t i = 0; i < mChannelChecks.size(); ++i) {
+      if (!(mChannelChecks[i] && mChannelChecks[i]->GetValue()))
+         continue;
+      if (i < mNumDeviceChannels)
          mCycleBits.push_back(static_cast<unsigned>(i));
+      else
+         ++offDeviceSkipped;
    }
    if (mCycleBits.empty()) {
-      mStatusText->SetLabel(
-         _("Select one or more reachable channels to cycle."));
+      if (offDeviceSkipped > 0) {
+         mStatusText->SetLabel(wxString::Format(
+            _("All %u selected channel(s) are past the device's "
+              "%zu reachable outputs; nothing to cycle."),
+            offDeviceSkipped, mNumDeviceChannels));
+      } else {
+         mStatusText->SetLabel(
+            _("Select one or more reachable channels to cycle."));
+      }
       return;
+   }
+   if (offDeviceSkipped > 0) {
+      // We have at least one reachable channel, but some of the
+      // user's selections are past the device width.  Surface this
+      // so they don't think the cycle "skipped" channels for
+      // mysterious reasons.
+      mStatusText->SetLabel(wxString::Format(
+         _("Cycling -- %u selected channel(s) past the device's "
+           "%zu outputs were skipped."),
+         offDeviceSkipped, mNumDeviceChannels));
    }
    mCycleIndex = 0;
    mCycling = true;
