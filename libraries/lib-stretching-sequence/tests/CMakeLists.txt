@@ -20,17 +20,21 @@ add_unit_test(
       MockSampleBlockFactory.cpp
       MockSampleBlockFactory.h
       MockPlayableSequence.h
+      PlaybackRoutingIntegrationTest.cpp
       SilenceSegmentTest.cpp
       StretchingSequenceTest.cpp
       StretchingSequenceIntegrationTest.cpp
+      StretchingSequenceMaskForwardingTest.cpp
       TestWaveClipMaker.cpp
       TestWaveClipMaker.h
       TestWaveTrackMaker.cpp
       TestWaveTrackMaker.h
+      WaveTrackOutputMaskTest.cpp
    MOCK_PREFS
    MOCK_AUDIO
    WAV_FILE_IO
    LIBRARIES
       lib-stretching-sequence
       lib-wave-track
+      lib-xml
 )

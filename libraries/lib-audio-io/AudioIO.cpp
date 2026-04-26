@@ -1326,14 +1326,18 @@ bool AudioIO::AllocateBuffers(
                [=]{ return std::make_unique<RingBuffer>(floatSample, playbackBufferSize); }
             );
 
-            // Compute per-track output channel assignments
+            // Snapshot per-track output masks.  Every track has an
+            // explicit mask; empty mask means the track is silent.
             {
-               std::vector<size_t> trackChannelCounts;
-               trackChannelCounts.reserve(mPlaybackSequences.size());
-               for (const auto& seq : mPlaybackSequences)
-                  trackChannelCounts.push_back(seq ? seq->NChannels() : 0);
-               mChannelAssignments = ComputeChannelAssignments(
-                  trackChannelCounts, mNumPlaybackChannels);
+               std::vector<PlaybackOutputMask> trackOutputMasks;
+               trackOutputMasks.reserve(mPlaybackSequences.size());
+               for (const auto& seq : mPlaybackSequences) {
+                  trackOutputMasks.push_back(
+                     seq ? seq->GetPlaybackOutputMask()
+                         : PlaybackOutputMask{});
+               }
+               mChannelAssignments =
+                  ComputeChannelAssignments(trackOutputMasks);
             }
 
             mPlaybackMixers.clear();
@@ -2221,10 +2225,17 @@ bool AudioIO::ProcessPlaybackSlices(
       buffer.resize(samplesAvailable, 0);
    }
 
-   // 4-case channel routing using mChannelAssignments from
-   // ComputeChannelAssignments(). Each track gets routed to the
-   // correct output channels based on its assignment.
+   // Channel routing using mChannelAssignments from
+   // ComputeChannelAssignments().  Per-track logic is in
+   // RouteTrackSamples() (lib-mixer) so the five-case routing decision
+   // can be unit-tested in isolation.
    {
+      std::vector<float*> masterBufs(mNumPlaybackChannels);
+      for (size_t n = 0; n < mNumPlaybackChannels; ++n)
+         masterBufs[n] = mMasterBuffers[n].data();
+
+      std::vector<float*> procBufs;
+
       unsigned bufferIndex = 0;
       unsigned trackIndex = 0;
       for(const auto& seq : mPlaybackSequences)
@@ -2235,57 +2246,21 @@ bool AudioIO::ProcessPlaybackSlices(
          }
 
          const auto numChannels = seq->NChannels();
-
-         // Get the routing assignment for this track
-         const int assignedOutput =
+         const TrackChannelAssignment assignment =
             (trackIndex < mChannelAssignments.size())
-            ? mChannelAssignments[trackIndex].outputChannel
-            : -1;
+               ? mChannelAssignments[trackIndex]
+               : TrackChannelAssignment{};
 
-         if (assignedOutput >= 0 && numChannels > 1) {
-            // Multi-channel track with assigned output: identity routing
-            // from assigned output channel onwards
-            const auto startCh = static_cast<unsigned>(assignedOutput);
-            const auto cnt = std::min(
-               numChannels,
-               static_cast<size_t>(mNumPlaybackChannels - startCh));
-            for (unsigned n = 0; n < cnt; ++n) {
-               const float volume = seq->GetChannelVolume(n);
-               for (unsigned i = 0; i < samplesAvailable; ++i) {
-                  mProcessingBuffers[bufferIndex + n][i] *= volume;
-                  mMasterBuffers[startCh + n][i] +=
-                     mProcessingBuffers[bufferIndex + n][i];
-               }
-            }
-         } else if (numChannels > 1 && assignedOutput < 0) {
-            // Multi-channel track, legacy routing (stereo)
-            const auto cnt = std::min(numChannels, mNumPlaybackChannels);
-            for (unsigned n = 0; n < cnt; ++n) {
-               const float volume = seq->GetChannelVolume(n);
-               for (unsigned i = 0; i < samplesAvailable; ++i) {
-                  mProcessingBuffers[bufferIndex + n][i] *= volume;
-                  mMasterBuffers[n][i] += mProcessingBuffers[bufferIndex + n][i];
-               }
-            }
-         } else if (numChannels == 1 && assignedOutput >= 0) {
-            // Mono track with assigned output channel
-            const auto targetChannel = static_cast<unsigned>(assignedOutput);
-            const float volume = seq->GetChannelVolume(0);
-            for (unsigned i = 0; i < samplesAvailable; ++i) {
-               mMasterBuffers[targetChannel][i] +=
-                  mProcessingBuffers[bufferIndex][i] * volume;
-            }
-         } else if (numChannels == 1) {
-            // Mono track, legacy stereo behavior: duplicate to all outputs
-            for (unsigned n = 0; n < mNumPlaybackChannels; ++n) {
-               const float volume = seq->GetChannelVolume(n);
-               for (unsigned i = 0; i < samplesAvailable; ++i) {
-                  mMasterBuffers[n][i] +=
-                     mProcessingBuffers[bufferIndex][i] * volume;
-               }
-            }
-         }
-         bufferIndex += seq->NChannels();
+         procBufs.resize(numChannels);
+         for (size_t n = 0; n < numChannels; ++n)
+            procBufs[n] = mProcessingBuffers[bufferIndex + n].data();
+
+         RouteTrackSamples(
+            assignment, numChannels, mNumPlaybackChannels, samplesAvailable,
+            [&seq](int ch) { return seq->GetChannelVolume(ch); },
+            procBufs.data(), masterBufs.data());
+
+         bufferIndex += numChannels;
          ++trackIndex;
       }
    }

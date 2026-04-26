@@ -16,6 +16,7 @@
 #include "AudioIOBase.h" // to inherit
 #include "AudioIOSequences.h"
 #include "ChannelRouting.h"
+#include "RouteTrackSamples.h"
 #include "PlaybackSchedule.h" // member variable
 
 #include <functional>

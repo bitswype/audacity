@@ -55,6 +55,10 @@ public:
    const ChannelGroup *FindChannelGroup() const override;
    bool GetSolo() const override;
    bool GetMute() const override;
+   //! Delegates to the wrapped WaveTrack so per-track playback
+   //! routing masks (from the Playback Routing dialog) flow through
+   //! the StretchingSequence wrapper to AudioIO.
+   PlaybackOutputMask GetPlaybackOutputMask() const override;
 
    // AudioGraph::Channel
    AudioGraph::ChannelType GetChannelType() const override;

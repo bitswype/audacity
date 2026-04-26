@@ -19,6 +19,7 @@
 #include "SampleTrack.h"
 #include "WideSampleSequence.h"
 
+#include <cstdint>
 #include <functional>
 #include <optional>
 #include <vector>
@@ -319,6 +320,26 @@ public:
    float GetPan() const;
    void SetPan(float newPan);
 
+   //! 128-bit mask of device output channels this track routes to.
+   //! Bit N set means "play on output channel N".  Empty mask = silent.
+   //! There is no "auto routing" runtime state -- the mask is set
+   //! explicitly at track creation (identity bits by default) and
+   //! changed from there.  See PlaybackOutputMask.h.
+   //! Overrides PlayableSequence::GetPlaybackOutputMask so AudioIO
+   //! can consume the mask without downcasting.
+   PlaybackOutputMask GetPlaybackOutputMask() const override;
+   void SetPlaybackOutputMask(PlaybackOutputMask mask);
+
+   //! True iff this track was loaded from XML that carried any
+   //! outputmask* attribute (new lo/hi or legacy single).  Tracks
+   //! created in-app default true (the PlaybackRoutingListener sets
+   //! up their identity immediately).  The load-time migration uses
+   //! this flag to decide whether a track's empty mask means "user
+   //! chose silent" (seen=true) or "upstream project without routing
+   //! metadata" (seen=false, synthesize identity).
+   bool GetOutputMaskAttrSeen() const;
+   void SetOutputMaskAttrSeen(bool seen);
+
    //! Takes volume and pan into account
    float GetChannelVolume(int channel) const override;
 
@@ -463,6 +484,9 @@ public:
    const ChannelGroup *FindChannelGroup() const override;
    bool GetMute() const override;
    bool GetSolo() const override;
+   //! GetPlaybackOutputMask also overrides PlayableSequence::
+   //! GetPlaybackOutputMask; see the public non-virtual declaration above
+   //! the GetChannelVolume override.
    //! @}
 
    ///
