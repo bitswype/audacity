@@ -41,6 +41,10 @@ class DevicePrefs final : public PrefsPanel
 
    void OnHost(wxCommandEvent & e);
    void OnDevice(wxCommandEvent & e);
+   //! Repopulate the Playback Channels dropdown when the Playback
+   //! Device selection changes.  Mirrors OnDevice for the recording
+   //! side, but reads maxOutputChannels from the playback DeviceSourceMap.
+   void OnPlayDevice(wxCommandEvent & e);
    void OnDefaultSampleRateChoice(wxCommandEvent& e);
    void OnProjectSampleRateChoice(wxCommandEvent& e);
 
@@ -53,11 +57,15 @@ class DevicePrefs final : public PrefsPanel
    wxString mRecordDevice;
    wxString mRecordSource;
    long mRecordChannels;
+   long mPlayChannels;
 
    wxChoice *mHost;
    wxChoice *mPlay;
    wxChoice *mRecord;
    wxChoice *mChannels;
+   //! bitswype fork: playback output channel count choice, symmetric
+   //! with mChannels which is for recording.  Wired to AudioIOPlaybackChannels.
+   wxChoice *mPlayChannelsChoice;
 
    wxChoice* mProjectSampleRates { nullptr };
    wxTextCtrl* mOtherProjectSampleRate { nullptr };
