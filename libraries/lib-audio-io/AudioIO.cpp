@@ -888,12 +888,19 @@ bool AudioIO::StartTestTone(const TestToneRequest& request,
    const unsigned int playbackChannels =
       static_cast<unsigned int>(std::max(1, AudioIOPlaybackChannels.Read()));
 
-   // Match the StartStream lifecycle: SetOwningProject (called from
-   // StartPortAudioStream) asserts when the previous owning project
-   // was never released.  In release builds this is a silent
-   // auto-recovery; in debug builds it is a popup.  Reset up front
-   // so we don't tickle the assertion when the project was left
-   // owning from a prior monitoring / playback session.
+   // Stand-alone stream lifecycle.  StartTestTone deliberately does
+   // NOT match StartStream's full lifecycle: it skips the
+   // PLAYBACK / CAPTURE event publish, the schedule init, the
+   // listener notifications, and the worker thread setup, because
+   // none of those apply to a no-tracks output-only test stream.
+   // The pieces it DOES share with StartStream:
+   //   - StartPortAudioStream (device open, sample rate negotiation)
+   //   - SetOwningProject / ResetOwningProject lifecycle
+   //   - The IsBusy() check above
+   // SetOwningProject (called from StartPortAudioStream) asserts
+   // when the previous owning project was never released.  Reset
+   // up front so we don't tickle the assertion when the project
+   // was left owning from a prior monitoring / playback session.
    ResetOwningProject();
 
    mUsingAlsa = false;
