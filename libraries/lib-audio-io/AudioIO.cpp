@@ -939,6 +939,25 @@ int AudioIO::StartStream(const TransportSequences &sequences,
    mCaptureSequences = sequences.captureSequences;
    mPlaybackSequences = sequences.playbackSequences;
 
+   // Snapshot per-capture-track input masks + channel counts.  Done
+   // here (GUI thread) so the buffer-exchange thread sees a stable
+   // (mask, numChannels) for the duration of the stream and doesn't
+   // need to take any atomics on the hot path.  If at least one
+   // track has a non-empty mask, matrix routing is engaged for the
+   // whole stream; if none do, matrix mode stays off and
+   // DrainRecordBuffers uses the legacy strict-1:1 path.
+   mCaptureRoutings.clear();
+   mCaptureRoutings.reserve(mCaptureSequences.size());
+   mUseRecordingMatrix = false;
+   for (const auto& seq : mCaptureSequences) {
+      CaptureRouting r;
+      r.mask = seq ? seq->GetPlaybackInputMask() : PlaybackInputMask{};
+      r.numChannels = seq ? seq->NChannels() : 0;
+      if (!r.mask.empty())
+         mUseRecordingMatrix = true;
+      mCaptureRoutings.push_back(r);
+   }
+
    bool commit = false;
    auto cleanupSequences = finally([&]{
       if (!commit) {
@@ -984,11 +1003,23 @@ int AudioIO::StartStream(const TransportSequences &sequences,
    }
 
    if (mCaptureSequences.size() > 0) {
-      numCaptureChannels = accumulate(
-         mCaptureSequences.begin(), mCaptureSequences.end(), size_t{},
-         [](auto acc, const auto &pSequence) {
-            return acc + pSequence->NChannels();
-         });
+      if (mUseRecordingMatrix) {
+         // bitswype fork: in matrix mode, the device input channel
+         // count is independent of how many destination track-channels
+         // exist (one input may feed many tracks; one mono track may
+         // sum many inputs).  Use the user-configured recording
+         // channel count.  Mask bits referencing channels beyond this
+         // value are surfaced in the routing dialog as off-device but
+         // not opened on PortAudio, so they capture silence.
+         numCaptureChannels = static_cast<size_t>(
+            std::max(1, AudioIORecordChannels.Read()));
+      } else {
+         numCaptureChannels = accumulate(
+            mCaptureSequences.begin(), mCaptureSequences.end(), size_t{},
+            [](auto acc, const auto &pSequence) {
+               return acc + pSequence->NChannels();
+            });
+      }
       // I don't deal with the possibility of the capture sequences
       // having different sample formats, since it will never happen
       // with the current code.  This code wouldn't *break* if this
@@ -2310,6 +2341,239 @@ bool AudioIO::ProcessPlaybackSlices(
    return progress;
 }
 
+bool AudioIO::DrainRecordBuffersMatrix(
+   size_t avail, double remainingSamples,
+   bool& latencyCorrected, bool& newBlocks)
+{
+   // Always drain ALL device-input ring buffers per pass, even those
+   // that no track's mask references, so the audio callback never
+   // blocks on a backed-up buffer.  Referenced inputs go into staging
+   // arrays for routing; unreferenced ones get discarded.
+   //
+   // Latency correction is per-source (discard ring buffer N samples
+   // OR pad N samples of silence on every track-channel destination).
+   // The "rightward shift" silence padding moves to the per-track
+   // loop below; the "leftward shift" discard happens in this
+   // pre-pass.
+   //
+   // Stride/format: matrix mode produces float samples per
+   // destination, since we may need to sum them.  Append takes the
+   // float into the track which is then converted to mCaptureFormat
+   // by the track's sample block layer.
+
+   // Compute which device-input bits any track's mask references
+   // (within range).
+   PlaybackInputMask referenced;
+   for (const auto& r : mCaptureRoutings) {
+      // Mask off any bits beyond mNumCaptureChannels; out-of-range
+      // bits don't correspond to a real ring buffer.
+      const auto cap = static_cast<unsigned>(
+         std::min<size_t>(mNumCaptureChannels, kPlaybackInputMaskBits));
+      auto m = r.mask;
+      // Trim hi bits >= cap
+      if (cap < 64) {
+         const uint64_t inLo = (cap == 0)
+            ? 0 : ((uint64_t(1) << cap) - 1);
+         m.lo &= inLo;
+         m.hi = 0;
+      } else if (cap < 128) {
+         const unsigned shift = cap - 64;
+         const uint64_t inHi = (shift == 0)
+            ? 0 : ((uint64_t(1) << shift) - 1);
+         m.hi &= inHi;
+      }
+      referenced.lo |= m.lo;
+      referenced.hi |= m.hi;
+   }
+
+   // Per-pass discard count for leftward latency shift.  Computed
+   // before any Get so all sources are aligned.
+   size_t globalDiscardSamples = 0;
+   const bool needLeftwardShift =
+      !mRecordingSchedule.mLatencyCorrected &&
+      mRecordingSchedule.TotalCorrection() < 0;
+   if (needLeftwardShift)
+      globalDiscardSamples = static_cast<size_t>(
+         std::floor(mRecordingSchedule.ToDiscard() * mRate));
+
+   // Stage[i] holds drained float samples for device input i (only
+   // populated for referenced inputs).  staged[i].size() is the
+   // post-resample count.
+   std::vector<std::vector<float>> staged(mNumCaptureChannels);
+   size_t stagedSize = 0;
+
+   for (size_t i = 0; i < mNumCaptureChannels; ++i) {
+      size_t discarded = 0;
+      if (needLeftwardShift) {
+         discarded = mCaptureBuffers[i]->Discard(
+            std::min(avail, globalDiscardSamples));
+         if (discarded < globalDiscardSamples)
+            latencyCorrected = false;
+      }
+
+      const size_t toGet = avail - discarded;
+      const bool isReferenced = referenced.test(static_cast<unsigned>(i));
+
+      if (!isReferenced) {
+         // Drain to keep the audio thread unblocked, but don't keep
+         // the samples.
+         if (toGet > 0)
+            mCaptureBuffers[i]->Discard(toGet);
+         continue;
+      }
+
+      if (mFactor == 1.0) {
+         std::vector<float> buf(toGet);
+         const auto got = mCaptureBuffers[i]->Get(
+            reinterpret_cast<samplePtr>(buf.data()),
+            floatSample, toGet);
+         (void)got;
+         size_t size = toGet;
+         if (double(size) > remainingSamples)
+            size = static_cast<size_t>(std::floor(remainingSamples));
+         buf.resize(size);
+         staged[i] = std::move(buf);
+      }
+      else {
+         std::vector<float> raw(toGet);
+         const auto got = mCaptureBuffers[i]->Get(
+            reinterpret_cast<samplePtr>(raw.data()),
+            floatSample, toGet);
+         (void)got;
+         const auto resampledMax =
+            static_cast<size_t>(std::lrint(toGet * mFactor));
+         std::vector<float> resampled(resampledMax);
+         size_t produced = 0;
+         if (toGet > 0) {
+            size_t toGetClamped = toGet;
+            if (double(toGetClamped) > remainingSamples)
+               toGetClamped = static_cast<size_t>(
+                  std::floor(remainingSamples));
+            const auto results = mResample[i]->Process(
+               mFactor, raw.data(), toGetClamped,
+               !IsStreamActive(), resampled.data(), resampledMax);
+            produced = results.second;
+         }
+         resampled.resize(produced);
+         staged[i] = std::move(resampled);
+      }
+
+      if (i == 0 || stagedSize == 0)
+         stagedSize = staged[i].size();
+      else
+         stagedSize = std::min(stagedSize, staged[i].size());
+   }
+
+   // If no referenced inputs (every track's mask was out-of-range
+   // for the current device), there's nothing further to do this pass.
+   if (stagedSize == 0)
+      return true;
+
+   // Build pointer array for RouteRecordingSamples.  Unreferenced
+   // entries point to a shared zero-filled buffer (cheap; matches
+   // size).
+   std::vector<float> zeroBuf(stagedSize, 0.0f);
+   std::vector<const float*> stagedPtrs(mNumCaptureChannels);
+   for (size_t i = 0; i < mNumCaptureChannels; ++i) {
+      if (!staged[i].empty()) {
+         // Trim/extend to stagedSize for uniform indexing.
+         if (staged[i].size() != stagedSize)
+            staged[i].resize(stagedSize, 0.0f);
+         stagedPtrs[i] = staged[i].data();
+      }
+      else {
+         stagedPtrs[i] = zeroBuf.data();
+      }
+   }
+
+   // Per-destination: route + silence-pad + crossfade + Append.
+   const bool needRightwardShift =
+      !mRecordingSchedule.mLatencyCorrected &&
+      mRecordingSchedule.TotalCorrection() >= 0;
+   const size_t silencePadSamples = needRightwardShift
+      ? static_cast<size_t>(
+         std::floor(mRecordingSchedule.TotalCorrection()
+                    * mRate * mFactor))
+      : 0;
+
+   size_t destLinearIndex = 0; // for crossfadeData lookup
+   for (size_t t = 0; t < mCaptureSequences.size(); ++t) {
+      auto& seq = mCaptureSequences[t];
+      if (!seq)
+         continue;
+      const auto& routing = mCaptureRoutings[t];
+      if (routing.mask.empty())
+         continue; // tracks without input mask aren't recording targets
+      const size_t numChannels = routing.numChannels;
+
+      for (size_t ch = 0; ch < numChannels; ++ch) {
+         // Rightward shift: pad initial silence into this channel
+         // exactly once per stream (gated by mLatencyCorrected).
+         if (needRightwardShift && silencePadSamples > 0) {
+            std::vector<float> silence(silencePadSamples, 0.0f);
+            seq->Append(ch,
+               reinterpret_cast<constSamplePtr>(silence.data()),
+               floatSample, silencePadSamples, 1,
+               narrowestSampleFormat);
+         }
+
+         // Apply mask routing into a per-destination float buffer.
+         std::vector<float> dest(stagedSize, 0.0f);
+         RouteRecordingSamples(
+            routing.mask, numChannels, ch,
+            mNumCaptureChannels, stagedSize,
+            stagedPtrs.data(), dest.data());
+
+         // Per-destination crossfade against the existing track
+         // samples (punch-and-roll).  Index in mCrossfadeData is
+         // the destination's flat (track, channel) position.
+         //
+         // KNOWN LIMITATION: punch-and-roll's CROSSFADE data is
+         // populated by TransportMenus.cpp punch-and-roll setup using
+         // a per-track resize that overwrites earlier tracks' data
+         // (TODO at line 307 of TransportMenus.cpp: "more-than-two-
+         // channels").  In matrix mode the destLinearIndex below is
+         // a valid per-destination flat walk, so the crossfade WOULD
+         // work correctly here -- but only the last selected track's
+         // data ever survives the populator's resize loop.  Fixing
+         // that is upstream territory.  Plain overdub (mLatency
+         // Correction without crossfade) works fine in matrix mode.
+         if (destLinearIndex < mRecordingSchedule.mCrossfadeData.size())
+         {
+            const auto& data =
+               mRecordingSchedule.mCrossfadeData[destLinearIndex];
+            const size_t totalCrossfadeLength = data.size();
+            if (totalCrossfadeLength) {
+               const size_t crossfadeStart = static_cast<size_t>(
+                  std::floor(mRecordingSchedule.Consumed() * mCaptureRate));
+               if (crossfadeStart < totalCrossfadeLength) {
+                  const float* pSrc = data.data() + crossfadeStart;
+                  const size_t crossfadeLength = std::min(
+                     stagedSize, totalCrossfadeLength - crossfadeStart);
+                  auto ratio = double(crossfadeStart) /
+                     totalCrossfadeLength;
+                  const auto ratioStep = 1.0 / totalCrossfadeLength;
+                  for (size_t k = 0; k < crossfadeLength; ++k) {
+                     dest[k] = static_cast<float>(
+                        ratio * dest[k] + (1.0 - ratio) * pSrc[k]);
+                     ratio += ratioStep;
+                  }
+               }
+            }
+         }
+
+         newBlocks = seq->Append(ch,
+            reinterpret_cast<constSamplePtr>(dest.data()),
+            floatSample, stagedSize, 1,
+            narrowestSampleFormat) || newBlocks;
+
+         ++destLinearIndex;
+      } // per-channel
+   } // per-track
+
+   return true;
+}
+
 void AudioIO::DrainRecordBuffers()
 {
    if (mRecordingException || mCaptureSequences.empty())
@@ -2352,6 +2616,27 @@ void AudioIO::DrainRecordBuffers()
           deltat >= mMinCaptureSecsToCopy)
       {
          bool newBlocks = false;
+
+         // bitswype fork: matrix-mode recording.  When any capture
+         // sequence has a non-empty input mask, we route device
+         // inputs to track channels via the per-track mask rather
+         // than 1:1.  This requires staging each device input ring
+         // buffer once (because multiple destinations may read it)
+         // and applying RouteRecordingSamples per destination.
+         if (mUseRecordingMatrix) {
+            const bool ok = DrainRecordBuffersMatrix(
+               avail, remainingSamples, latencyCorrected, newBlocks);
+            // If matrix path declined (e.g. setup edge case), fall
+            // back to the legacy iteration so we don't break record.
+            if (ok) {
+               mRecordingSchedule.mPosition += avail / mRate;
+               mRecordingSchedule.mLatencyCorrected = latencyCorrected;
+               auto pListener = GetListener();
+               if (pListener && newBlocks)
+                  pListener->OnAudioIONewBlocks();
+               return;
+            }
+         }
 
          // Append captured samples to the end of the RecordableSequences.
          // (WaveTracks have their own buffering for efficiency.)

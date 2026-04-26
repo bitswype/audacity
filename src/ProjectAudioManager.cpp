@@ -888,6 +888,49 @@ bool ProjectAudioManager::DoRecord(AudacityProject &project,
       }
 
       if (transportSequences.captureSequences.empty()) {
+         // bitswype fork: matrix-mode recording.  If any existing
+         // WaveTrack has a non-empty input mask, treat those as the
+         // capture targets (skip the legacy "create N new tracks
+         // based on AudioIORecordChannels" path).  This is the
+         // implicit mode switch -- tracks created in-app get
+         // identity input routing automatically (see
+         // PlaybackRoutingListener), so a populated project is
+         // always in matrix mode unless the user has explicitly
+         // cleared every input mask.
+         //
+         // Use the same pending-track machinery as the append path so
+         // that an aborted matrix-mode recording (StartStream failure,
+         // user cancel before any block flushes) rolls back cleanly
+         // and leaves no stale empty clips in the real tracks.
+         auto matrixUpdater = [](Track &d, const Track &s){
+            assert(d.NChannels() == s.NChannels());
+            auto &dst = static_cast<WaveTrack&>(d);
+            auto &src = static_cast<const WaveTrack&>(s);
+            dst.Init(src);
+         };
+         bool anyMatrixTrack = false;
+         for (auto pTrack : trackList.Any<WaveTrack>()) {
+            if (pTrack->GetPlaybackInputMask().empty())
+               continue;
+            anyMatrixTrack = true;
+            // Place an empty clip at t0 marked as placeholder so it
+            // survives copy-into-pending but doesn't leak if we abort.
+            auto newClip = insertEmptyInterval(*pTrack, t0, true);
+            const auto pending = static_cast<WaveTrack*>(
+               pendingTracks.RegisterPendingChangedTrack(
+                  matrixUpdater, pTrack));
+            if (newClip)
+               newClip->SetIsPlaceholder(false);
+            if (auto copiedClip = pending->NewestOrNewClip())
+               copiedClip->SetIsPlaceholder(false);
+            transportSequences.captureSequences.push_back(
+               pending->SharedPointer<WaveTrack>());
+         }
+         if (anyMatrixTrack)
+            pendingTracks.UpdatePendingTracks();
+      }
+
+      if (transportSequences.captureSequences.empty()) {
          // recording to NEW track(s).
          bool recordingNameCustom, useTrackNumber, useDateStamp, useTimeStamp;
          wxString defaultTrackName, defaultRecordingTrackName;

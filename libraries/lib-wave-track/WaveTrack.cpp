@@ -245,6 +245,14 @@ struct WaveTrackData : ClientData::Cloneable<> {
    bool GetOutputMaskAttrSeen() const { return mOutputMaskAttrSeen; }
    void SetOutputMaskAttrSeen(bool seen) { mOutputMaskAttrSeen = seen; }
 
+   PlaybackInputMask GetPlaybackInputMask() const;
+   void SetPlaybackInputMask(PlaybackInputMask mask);
+
+   //! Same legacy-vs-explicit semantics as the output side, applied to
+   //! the recording-input mask.
+   bool GetInputMaskAttrSeen() const { return mInputMaskAttrSeen; }
+   void SetInputMaskAttrSeen(bool seen) { mInputMaskAttrSeen = seen; }
+
 private:
    //! Atomic because it may be read by worker threads in playback
    std::atomic<float> mGain{ 1.0f };
@@ -266,6 +274,14 @@ private:
    //! outputmask* attr encountered sets it back.
    bool mOutputMaskAttrSeen{ true };
 
+   //! 128-bit recording-input mask.  See PlaybackInputMask.h.
+   //! Stored via the same seqlock pattern as the output mask so that
+   //! audio-thread reads (when the recording engine snapshots masks
+   //! at StartStream) are atomic with respect to GUI-thread writes.
+   AtomicPlaybackInputMask mPlaybackInputMask;
+   //! Mirror of mOutputMaskAttrSeen for the input side.
+   bool mInputMaskAttrSeen{ true };
+
    int mRate{ 44100 };
    double mOrigin{ 0.0 };
    sampleFormat mFormat { floatSample };
@@ -280,6 +296,9 @@ WaveTrackData::WaveTrackData(const WaveTrackData &other) {
    SetVolume(other.GetVolume());
    SetPan(other.GetPan());
    SetPlaybackOutputMask(other.GetPlaybackOutputMask());
+   SetPlaybackInputMask(other.GetPlaybackInputMask());
+   mOutputMaskAttrSeen = other.mOutputMaskAttrSeen;
+   mInputMaskAttrSeen = other.mInputMaskAttrSeen;
    mRate = other.mRate;
    mOrigin = other.mOrigin;
    mFormat = other.mFormat;
@@ -357,6 +376,16 @@ PlaybackOutputMask WaveTrackData::GetPlaybackOutputMask() const
 void WaveTrackData::SetPlaybackOutputMask(PlaybackOutputMask mask)
 {
    mPlaybackOutputMask.Store(mask);
+}
+
+PlaybackInputMask WaveTrackData::GetPlaybackInputMask() const
+{
+   return mPlaybackInputMask.Load();
+}
+
+void WaveTrackData::SetPlaybackInputMask(PlaybackInputMask mask)
+{
+   mPlaybackInputMask.Store(mask);
 }
 
 namespace {
@@ -940,6 +969,29 @@ bool WaveTrack::GetOutputMaskAttrSeen() const
 void WaveTrack::SetOutputMaskAttrSeen(bool seen)
 {
    WaveTrackData::Get(*this).SetOutputMaskAttrSeen(seen);
+}
+
+PlaybackInputMask WaveTrack::GetPlaybackInputMask() const
+{
+   return WaveTrackData::Get(*this).GetPlaybackInputMask();
+}
+
+void WaveTrack::SetPlaybackInputMask(PlaybackInputMask mask)
+{
+   if (GetPlaybackInputMask() != mask) {
+      WaveTrackData::Get(*this).SetPlaybackInputMask(mask);
+      Notify(true);
+   }
+}
+
+bool WaveTrack::GetInputMaskAttrSeen() const
+{
+   return WaveTrackData::Get(*this).GetInputMaskAttrSeen();
+}
+
+void WaveTrack::SetInputMaskAttrSeen(bool seen)
+{
+   WaveTrackData::Get(*this).SetInputMaskAttrSeen(seen);
 }
 
 float WaveChannel::GetChannelVolume(int channel) const
@@ -2445,6 +2497,10 @@ static constexpr auto Channel_attr = "channel"; // write-only!
 static constexpr auto OutputMaskLo_attr = "outputmasklo";
 static constexpr auto OutputMaskHi_attr = "outputmaskhi";
 static constexpr auto LegacyOutputMask_attr = "outputmask";
+//! bitswype fork: per-track recording-input mask (lo/hi 64 bits each).
+//! See PlaybackInputMask.h for semantics.
+static constexpr auto InputMaskLo_attr = "inputmasklo";
+static constexpr auto InputMaskHi_attr = "inputmaskhi";
 
 bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &attrs)
 {
@@ -2452,12 +2508,14 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &
       double dblValue;
       long nValue;
 
-      // bitswype fork: start from "no outputmask attr seen".  If the
-      // attr loop below hits any outputmask* attribute, the track
-      // counts as having user intent; otherwise it is an upstream/
-      // pre-feature project and the post-load migration will
-      // materialize identity.
+      // bitswype fork: start from "no outputmask/inputmask attr seen".
+      // If the attr loop below hits any outputmask* / inputmask* attr,
+      // the corresponding flag is set back to true so the post-load
+      // migration knows to leave the mask alone (the user explicitly
+      // chose it, even if empty).  Upstream / pre-feature projects
+      // leave the flag false and the migration synthesizes identity.
       WaveTrackData::Get(*this).SetOutputMaskAttrSeen(false);
+      WaveTrackData::Get(*this).SetInputMaskAttrSeen(false);
 
       for (const auto& pair : attrs)
       {
@@ -2508,6 +2566,24 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList &
                m.hi = static_cast<uint64_t>(v);
                SetPlaybackOutputMask(m);
                WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
+            }
+         }
+         else if (attr == InputMaskLo_attr) {
+            unsigned long long v = 0;
+            if (value.TryGet(v)) {
+               auto m = GetPlaybackInputMask();
+               m.lo = static_cast<uint64_t>(v);
+               SetPlaybackInputMask(m);
+               WaveTrackData::Get(*this).SetInputMaskAttrSeen(true);
+            }
+         }
+         else if (attr == InputMaskHi_attr) {
+            unsigned long long v = 0;
+            if (value.TryGet(v)) {
+               auto m = GetPlaybackInputMask();
+               m.hi = static_cast<uint64_t>(v);
+               SetPlaybackInputMask(m);
+               WaveTrackData::Get(*this).SetInputMaskAttrSeen(true);
             }
          }
          else if (attr == SampleFormat_attr && value.TryGet(nValue) &&
@@ -2657,6 +2733,14 @@ void WaveTrack::WriteOneXML(const WaveChannel &channel, XMLWriter &xmlFile,
       xmlFile.WriteAttr(OutputMaskHi_attr,
          wxString::Format(wxT("%llu"),
             static_cast<unsigned long long>(mask.hi)));
+
+      const auto inMask = track.GetPlaybackInputMask();
+      xmlFile.WriteAttr(InputMaskLo_attr,
+         wxString::Format(wxT("%llu"),
+            static_cast<unsigned long long>(inMask.lo)));
+      xmlFile.WriteAttr(InputMaskHi_attr,
+         wxString::Format(wxT("%llu"),
+            static_cast<unsigned long long>(inMask.hi)));
    }
 
    // VS: trying to save tracks that didn't pass all necessary

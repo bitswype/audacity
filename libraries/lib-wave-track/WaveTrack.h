@@ -13,6 +13,7 @@
 
 #include "ClipInterface.h"
 #include "PlaybackDirection.h"
+#include "PlaybackInputMask.h"
 #include "Prefs.h"
 #include "SampleCount.h"
 #include "SampleFormat.h"
@@ -339,6 +340,24 @@ public:
    //! metadata" (seen=false, synthesize identity).
    bool GetOutputMaskAttrSeen() const;
    void SetOutputMaskAttrSeen(bool seen);
+
+   //! 128-bit mask of device input channels feeding this track during
+   //! recording.  Bit N set means "device input channel N feeds this
+   //! track".  Empty mask = "this track is not a recording target".
+   //! For mono tracks, all set bits SUM into the single track channel.
+   //! For multi-channel tracks, set bits walk in low-to-high order to
+   //! channels 0, 1, ..., NChannels()-1; extras dropped.
+   //! Overrides RecordableSequence::GetPlaybackInputMask so AudioIO
+   //! can consume the mask without downcasting.
+   //! See PlaybackInputMask.h.
+   PlaybackInputMask GetPlaybackInputMask() const override;
+   void SetPlaybackInputMask(PlaybackInputMask mask);
+
+   //! True iff this track was loaded from XML that carried any
+   //! inputmask* attribute.  Same legacy-vs-explicit semantics as
+   //! GetOutputMaskAttrSeen for the recording side.
+   bool GetInputMaskAttrSeen() const;
+   void SetInputMaskAttrSeen(bool seen);
 
    //! Takes volume and pan into account
    float GetChannelVolume(int channel) const override;

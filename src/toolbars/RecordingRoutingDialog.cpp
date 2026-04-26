@@ -2,29 +2,25 @@
 
   Audacity: A Digital Audio Editor
 
-  PlaybackRoutingDialog.cpp
+  RecordingRoutingDialog.cpp
 
 **********************************************************************/
 
-#include "PlaybackRoutingDialog.h"
+#include "RecordingRoutingDialog.h"
 
 #include <wx/button.h>
 #include <wx/checkbox.h>
-#include <wx/choice.h>
 #include <wx/dcclient.h>
 #include <wx/display.h>
 #include <wx/scrolwin.h>
 #include <wx/settings.h>
 #include <wx/sizer.h>
-#include <wx/spinctrl.h>
 #include <wx/stattext.h>
 
-#include "AudioIOBase.h"        // for AudioIOPlaybackChannels
-#include "PlaybackOutputMask.h"
+#include "AudioIOBase.h"        // for AudioIORecordChannels
+#include "PlaybackInputMask.h"
 #include "Project.h"
 #include "ProjectHistory.h"
-#include "ProjectRate.h"
-#include "QualitySettings.h"
 #include "ShuttleGui.h"
 #include "Track.h"
 #include "WaveTrack.h"
@@ -34,17 +30,17 @@
 namespace {
 //! Upper bound on columns the dialog will ever display.  Matches the
 //! width of the underlying mask.
-constexpr size_t kMaxDisplayChannels = kPlaybackOutputMaskBits;
+constexpr size_t kMaxDisplayChannels = kPlaybackInputMaskBits;
 
 //! Scroll unit in pixels for all four sub-canvases.  Must be shared
 //! so scroll-position sync between them is a one-to-one unit mapping.
 constexpr int kScrollUnit = 1;
 
-//! Read the first @p numChannels checkboxes into a PlaybackOutputMask.
-PlaybackOutputMask MaskFromCheckboxes(
+//! Read the first @p numChannels checkboxes into a PlaybackInputMask.
+PlaybackInputMask MaskFromCheckboxes(
    const std::vector<wxCheckBox*>& checks, size_t numChannels)
 {
-   PlaybackOutputMask mask;
+   PlaybackInputMask mask;
    const auto cap = std::min(
       std::min(checks.size(), numChannels), kMaxDisplayChannels);
    for (size_t i = 0; i < cap; ++i)
@@ -56,7 +52,7 @@ PlaybackOutputMask MaskFromCheckboxes(
 //! Set the first @p numChannels checkboxes to match a mask.
 void CheckboxesFromMask(
    const std::vector<wxCheckBox*>& checks,
-   const PlaybackOutputMask& mask, size_t numChannels)
+   const PlaybackInputMask& mask, size_t numChannels)
 {
    const auto cap = std::min(
       std::min(checks.size(), numChannels), kMaxDisplayChannels);
@@ -66,22 +62,22 @@ void CheckboxesFromMask(
 }
 } // namespace
 
-PlaybackRoutingDialog::PlaybackRoutingDialog(
+RecordingRoutingDialog::RecordingRoutingDialog(
    wxWindow *parent, AudacityProject &project, WaveTrack *focusedTrack)
    : wxDialogWrapper(parent, wxID_ANY,
-                     XO("Playback Routing Matrix"),
+                     XO("Recording Routing Matrix"),
                      wxDefaultPosition, wxDefaultSize,
                      wxDEFAULT_DIALOG_STYLE | wxRESIZE_BORDER)
    , mProject(project)
 {
    SetName();
 
-   auto requested = AudioIOPlaybackChannels.ReadWithDefault(2);
+   auto requested = AudioIORecordChannels.ReadWithDefault(2);
    if (requested < 1)
       requested = 1;
    if (requested > static_cast<int>(kMaxDisplayChannels))
       requested = static_cast<int>(kMaxDisplayChannels);
-   mNumOutputChannels = static_cast<size_t>(requested);
+   mNumDeviceChannels = static_cast<size_t>(requested);
 
    // Seed rows up front so BuildUI and ComputeInitialSize both see
    // the track list.
@@ -89,17 +85,35 @@ PlaybackRoutingDialog::PlaybackRoutingDialog(
    for (auto pTrack : tracks.Any<WaveTrack>()) {
       TrackRow row;
       row.track = pTrack;
-      row.originalStoredMask = pTrack->GetPlaybackOutputMask();
+      row.originalStoredMask = pTrack->GetPlaybackInputMask();
       mRows.push_back(std::move(row));
    }
+
+   // Choose how many columns to render.  At minimum the device
+   // width, but we extend the visible range to cover any track
+   // mask bits beyond it (so the user can see and clear them) and
+   // to leave room for Reset to assign identity routing on the
+   // last row.  See ComputeRecordingDialogColumnCount.
+   std::vector<PlaybackInputMask> masks;
+   std::vector<unsigned> chans;
+   masks.reserve(mRows.size());
+   chans.reserve(mRows.size());
+   for (const auto &row : mRows) {
+      masks.push_back(row.originalStoredMask);
+      chans.push_back(row.track
+         ? static_cast<unsigned>(row.track->NChannels())
+         : 0u);
+   }
+   mNumOutputChannels = ComputeRecordingDialogColumnCount(
+      static_cast<unsigned>(mNumDeviceChannels), masks, chans);
 
    SetClientSize(ComputeInitialSize());
    BuildUI(focusedTrack);
 }
 
-PlaybackRoutingDialog::~PlaybackRoutingDialog() = default;
+RecordingRoutingDialog::~RecordingRoutingDialog() = default;
 
-wxSize PlaybackRoutingDialog::ComputeInitialSize() const
+wxSize RecordingRoutingDialog::ComputeInitialSize() const
 {
    // Rough pixel estimates.  These do not need to match the final
    // widget sizes exactly -- the matrix is scrollable, so being a
@@ -129,112 +143,39 @@ wxSize PlaybackRoutingDialog::ComputeInitialSize() const
    return wxSize(w, h);
 }
 
-void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
+void RecordingRoutingDialog::BuildUI(WaveTrack *focusedTrack)
 {
    auto *outer = new wxBoxSizer(wxVERTICAL);
 
    auto *header = new wxStaticText(this, wxID_ANY,
-      XO("Each checkbox routes a track's audio to the corresponding "
-         "device output channel.\n"
-         "An empty row means the track is silenced (no playback). "
+      XO("Each checkbox feeds the corresponding device input channel "
+         "into the row's track when recording.\n"
+         "Mono tracks SUM all checked inputs.  Multi-channel tracks "
+         "take checked inputs in order; extras are dropped.  An "
+         "empty row means the track is not a recording target.  "
          "Use Reset to restore identity routing for a row.")
          .Translation());
    outer->Add(header, 0, wxEXPAND | wxALL, 8);
 
-   // Empty-project case: offer to create N tracks pre-set to the
-   // playback channel count so the user can plan their routing
-   // before adding actual content.
-   if (mRows.empty()) {
-      const int playChannels =
-         std::max(1, AudioIOPlaybackChannels.Read());
-
-      auto *empty = new wxStaticText(this, wxID_ANY,
-         _("No wave tracks in this project yet.\n\n"
-           "Playback routing is configured per track.  Create "
-           "tracks below to plan your output mapping; each new "
-           "track gets identity routing by default (track 1 -> "
-           "output 1, etc.) which you can customise by re-opening "
-           "this dialog."));
-      outer->Add(empty, 0, wxEXPAND | wxALL, 16);
-
-      auto *form = new wxFlexGridSizer(/*cols*/ 2, /*vgap*/ 8, /*hgap*/ 8);
-      form->Add(new wxStaticText(this, wxID_ANY, _("Number of mono tracks:")),
-         0, wxALIGN_CENTER_VERTICAL);
-      auto *spin = new wxSpinCtrl(this, wxID_ANY,
-         wxString::Format(wxT("%d"), playChannels),
-         wxDefaultPosition, wxSize(96, -1),
-         wxSP_ARROW_KEYS, 1, 128, playChannels);
-      form->Add(spin, 0);
-      outer->Add(form, 0, wxLEFT | wxRIGHT, 24);
-
-      auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
-      btnRow->AddStretchSpacer();
-      auto *createBtn = new wxButton(this, wxID_OK, _("&Create tracks"));
-      btnRow->Add(createBtn, 0, wxRIGHT, 8);
-      btnRow->Add(new wxButton(this, wxID_CANCEL, _("Cancel")), 0);
-      outer->Add(btnRow, 0, wxALL | wxEXPAND, 8);
-
-      Bind(wxEVT_BUTTON, [this, spin](wxCommandEvent&) {
-         const int n = spin->GetValue();
-         auto &tracks = TrackList::Get(mProject);
-         auto &factory = WaveTrackFactory::Get(mProject);
-         const auto fmt = QualitySettings::SampleFormatChoice();
-         const auto rate = ProjectRate::Get(mProject).GetRate();
-
-         PlaybackOutputMask occupiedOut;
-         for (auto pTrack : tracks.Any<WaveTrack>()) {
-            const auto outM = pTrack->GetPlaybackOutputMask();
-            occupiedOut.lo |= outM.lo;  occupiedOut.hi |= outM.hi;
-         }
-         unsigned nextSlot = 0;
-         for (unsigned b = 0; b < kPlaybackOutputMaskBits; ++b) {
-            if (!occupiedOut.test(b)) {
-               nextSlot = b; break;
-            }
-         }
-
-         for (int i = 0; i < n; ++i) {
-            auto t = factory.Create(fmt, rate);
-            t->SetName(tracks.MakeUniqueTrackName(
-               WaveTrack::GetDefaultAudioTrackNamePreference()));
-            tracks.Add(t);
-            const unsigned bit = nextSlot + static_cast<unsigned>(i);
-            if (bit < kPlaybackOutputMaskBits) {
-               if (t->GetPlaybackOutputMask().empty())
-                  t->SetPlaybackOutputMask(
-                     PlaybackOutputMask::Identity(bit, 1));
-            }
-         }
-         ProjectHistory::Get(mProject).PushState(
-            XO("Created tracks for routing"), XO("New Tracks"));
-         EndModal(kRoutingDialogReopenAfterCreate);
-      }, wxID_OK);
-      Bind(wxEVT_BUTTON,
-         [this](wxCommandEvent&) { EndModal(wxID_CANCEL); }, wxID_CANCEL);
-      Bind(wxEVT_CLOSE_WINDOW,
-         [this](wxCloseEvent&) { EndModal(wxID_CANCEL); });
-
-      SetSizer(outer);
-      return;
-   }
-
-   // Notice when tracks route to channels beyond the current device.
+   // If any tracks reference channels beyond the current playback
+   // device, surface that explicitly so the user knows why some
+   // columns are marked with an asterisk.
    {
-      std::vector<PlaybackOutputMask> masks;
+      std::vector<PlaybackInputMask> masks;
       masks.reserve(mRows.size());
       for (const auto &row : mRows)
          masks.push_back(row.originalStoredMask);
-      const auto offCount = CountTracksWithBitsAboveDeviceWidth(
-         static_cast<unsigned>(mNumOutputChannels), masks);
+      const auto offCount = CountRecordingTracksWithBitsAboveDeviceWidth(
+         static_cast<unsigned>(mNumDeviceChannels), masks);
       if (offCount > 0) {
          auto *notice = new wxStaticText(this, wxID_ANY,
             wxString::Format(
-               _("Note: %u track(s) route to channels beyond your "
-                 "%u-channel playback device.  Off-device columns "
-                 "are marked with * and will be silent until you "
-                 "switch to a device with more outputs."),
+               _("Note: %u track(s) reference inputs beyond your "
+                 "%u-channel recording device.  Off-device columns "
+                 "are marked with * and will record silence until you "
+                 "switch to a device with more inputs."),
                offCount,
-               static_cast<unsigned>(mNumOutputChannels)));
+               static_cast<unsigned>(mNumDeviceChannels)));
          notice->SetForegroundColour(
             wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
          outer->Add(notice, 0, wxEXPAND | wxLEFT | wxRIGHT | wxBOTTOM, 8);
@@ -282,11 +223,27 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
       wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
    mHeaderPanel->SetMinSize(wxSize(-1, mHeaderRowHeight));
    for (size_t ch = 0; ch < mNumOutputChannels; ++ch) {
-      auto *label = new wxStaticText(mHeaderPanel, wxID_ANY,
-         wxString::Format("%zu", ch + 1),
+      // Off-device columns get an asterisk suffix and italic font so
+      // they are visually distinct from the device-routable columns.
+      const bool offDevice = ch >= mNumDeviceChannels;
+      const wxString text = offDevice
+         ? wxString::Format("%zu*", ch + 1)
+         : wxString::Format("%zu", ch + 1);
+      auto *label = new wxStaticText(mHeaderPanel, wxID_ANY, text,
          wxPoint(static_cast<int>(ch) * mColumnWidth, 0),
          wxSize(mColumnWidth, mHeaderRowHeight),
          wxALIGN_CENTER_HORIZONTAL | wxALIGN_CENTER_VERTICAL);
+      if (offDevice) {
+         auto font = label->GetFont();
+         font.SetStyle(wxFONTSTYLE_ITALIC);
+         label->SetFont(font);
+         label->SetForegroundColour(
+            wxSystemSettings::GetColour(wxSYS_COLOUR_GRAYTEXT));
+         label->SetToolTip(
+            _("This channel is beyond the current recording device's "
+              "input count.  The routing is preserved but will record "
+              "silence until the device exposes more channels."));
+      }
       mHeaderLabels.push_back(label);
    }
 
@@ -406,41 +363,8 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
 
    // --- Buttons ---
    auto *btnRow = new wxBoxSizer(wxHORIZONTAL);
-   auto *resetAllBtn =
-      new wxButton(this, wxID_ANY, _("&Reset all"));
-   resetAllBtn->SetToolTip(
-      _("Clear all rows, then assign identity routing to every row "
-        "in order (track 1 -> output 1, track 2 -> output 2, etc.).  "
-        "Per-row Reset places one row at a time relative to the "
-        "others; Reset all rebuilds the whole matrix."));
-   resetAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-      // Clear first, then walk in row order so each row picks the
-      // lowest free slot relative to the rows above it -- this is
-      // the only way to guarantee a clean identity layout when row
-      // channel widths vary.
-      for (auto &row : mRows)
-         for (auto *cb : row.checks)
-            if (cb) cb->SetValue(false);
-      for (size_t i = 0; i < mRows.size(); ++i)
-         OnResetRow(static_cast<int>(i));
-   });
-   btnRow->Add(resetAllBtn, 0, wxALL, 6);
-
-   auto *clearAllBtn =
-      new wxButton(this, wxID_ANY, _("Cl&ear all"));
-   clearAllBtn->SetToolTip(
-      _("Uncheck every box in every row.  An empty row means the "
-        "track is silent on playback; this lets you start from a "
-        "clean slate before opting tracks back in."));
-   clearAllBtn->Bind(wxEVT_BUTTON, [this](wxCommandEvent&) {
-      for (auto &row : mRows)
-         for (auto *cb : row.checks)
-            if (cb) cb->SetValue(false);
-   });
-   btnRow->Add(clearAllBtn, 0, wxALL, 6);
-
    auto *closeBtn = new wxButton(this, wxID_CLOSE, _("&Close"));
-   closeBtn->Bind(wxEVT_BUTTON, &PlaybackRoutingDialog::OnClose, this);
+   closeBtn->Bind(wxEVT_BUTTON, &RecordingRoutingDialog::OnClose, this);
    closeBtn->SetDefault();
    btnRow->AddStretchSpacer();
    btnRow->Add(closeBtn, 0, wxALL, 6);
@@ -454,21 +378,21 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
    // is to listen for the low-level scroll events on the matrix and
    // re-read its view start every time.
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_TOP,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_BOTTOM,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_LINEUP,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_LINEDOWN,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_PAGEUP,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_PAGEDOWN,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_THUMBTRACK,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    mMatrixPanel->Bind(wxEVT_SCROLLWIN_THUMBRELEASE,
-      &PlaybackRoutingDialog::OnMatrixScroll, this);
+      &RecordingRoutingDialog::OnMatrixScroll, this);
    // Mouse-wheel scroll fires wxEVT_SCROLLWIN_LINE{UP,DOWN}, already
    // covered above.  Keyboard arrow-key scroll within the matrix
    // also triggers SCROLLWIN_*, also covered.
@@ -495,13 +419,13 @@ void PlaybackRoutingDialog::BuildUI(WaveTrack *focusedTrack)
    }
 }
 
-void PlaybackRoutingDialog::OnMatrixScroll(wxScrollWinEvent &event)
+void RecordingRoutingDialog::OnMatrixScroll(wxScrollWinEvent &event)
 {
    event.Skip();
    SyncHeaderAndLabelPositions();
 }
 
-void PlaybackRoutingDialog::SyncHeaderAndLabelPositions()
+void RecordingRoutingDialog::SyncHeaderAndLabelPositions()
 {
    // Header and labels are plain (non-scrolling) wxPanels.  We
    // reposition their children to (logical_pos - matrix_scroll).
@@ -529,7 +453,7 @@ void PlaybackRoutingDialog::SyncHeaderAndLabelPositions()
    }
 }
 
-void PlaybackRoutingDialog::UpdateStatus(int rowIndex, int colIndex)
+void RecordingRoutingDialog::UpdateStatus(int rowIndex, int colIndex)
 {
    if (!mStatusText)
       return;
@@ -542,12 +466,21 @@ void PlaybackRoutingDialog::UpdateStatus(int rowIndex, int colIndex)
    }
    const auto &row = mRows[rowIndex];
    const wxString name = row.track ? row.track->GetName() : wxString{};
-   mStatusText->SetLabel(wxString::Format(
-      _("Track %d ('%s'), output %d"),
-      rowIndex + 1, name, colIndex + 1));
+   const bool offDevice =
+      static_cast<size_t>(colIndex) >= mNumDeviceChannels;
+   if (offDevice)
+      mStatusText->SetLabel(wxString::Format(
+         _("Track %d ('%s'), input %d (beyond device's "
+           "%u channels -- silent)"),
+         rowIndex + 1, name, colIndex + 1,
+         static_cast<unsigned>(mNumDeviceChannels)));
+   else
+      mStatusText->SetLabel(wxString::Format(
+         _("Track %d ('%s'), input %d"),
+         rowIndex + 1, name, colIndex + 1));
 }
 
-void PlaybackRoutingDialog::OnResetRow(int rowIndex)
+void RecordingRoutingDialog::OnResetRow(int rowIndex)
 {
    if (rowIndex < 0 || static_cast<size_t>(rowIndex) >= mRows.size())
       return;
@@ -556,12 +489,10 @@ void PlaybackRoutingDialog::OnResetRow(int rowIndex)
    if (channels == 0)
       return;
 
-   // Compute the lowest channel slot whose [start, start+channels) range
-   // is unoccupied by ANY OTHER row's CURRENT checkbox state.  Using
-   // rowIndex as the start would collide whenever earlier rows have
-   // wider channel counts (e.g. row 0 stereo + row 1 mono: row 1 reset
-   // to bit 1 collides with row 0's right channel).
-   PlaybackOutputMask occupied;
+   // Compute lowest channel slot whose [start, start+channels) range
+   // is unoccupied by any OTHER row's CURRENT checkbox state.  See
+   // PlaybackRoutingDialog::OnResetRow for the design rationale.
+   PlaybackInputMask occupied;
    for (size_t r = 0; r < mRows.size(); ++r) {
       if (static_cast<int>(r) == rowIndex)
          continue;
@@ -582,31 +513,27 @@ void PlaybackRoutingDialog::OnResetRow(int rowIndex)
       ++start;
    }
    if (start + want > kMaxDisplayChannels)
-      return; // nothing free; leave row alone
+      return;
 
-   const auto identity = PlaybackOutputMask::Identity(start, want);
+   const auto identity = PlaybackInputMask::Identity(start, want);
    CheckboxesFromMask(row.checks, identity, mNumOutputChannels);
 }
 
-int PlaybackRoutingDialog::ApplyIntents()
+int RecordingRoutingDialog::ApplyIntents()
 {
+   // Every set bit on the track is visible as a checkbox: the dialog
+   // expands its column range to cover bits beyond the device width
+   // (see ComputeRecordingDialogColumnCount).  So the new mask is just
+   // whatever the visible checkboxes say -- no invisible-bit
+   // preservation needed.
    int changed = 0;
    for (auto &row : mRows) {
       if (!row.track)
          continue;
-      // Preserve any bits set above the device width -- the user
-      // cannot see them, but we don't want to silently clear them.
-      auto newMask = row.originalStoredMask;
-      for (size_t ch = 0; ch < mNumOutputChannels &&
-                           ch < kMaxDisplayChannels; ++ch)
-         newMask.clear(static_cast<unsigned>(ch));
-      const auto visibleMask =
+      const auto newMask =
          MaskFromCheckboxes(row.checks, mNumOutputChannels);
-      newMask.lo |= visibleMask.lo;
-      newMask.hi |= visibleMask.hi;
-
       if (newMask != row.originalStoredMask) {
-         row.track->SetPlaybackOutputMask(newMask);
+         row.track->SetPlaybackInputMask(newMask);
          row.originalStoredMask = newMask;
          ++changed;
       }
@@ -614,7 +541,7 @@ int PlaybackRoutingDialog::ApplyIntents()
    return changed;
 }
 
-void PlaybackRoutingDialog::OnClose(wxCommandEvent &)
+void RecordingRoutingDialog::OnClose(wxCommandEvent &)
 {
    const int changed = ApplyIntents();
    // Routing changes are user-visible structural state -- push a
@@ -626,9 +553,9 @@ void PlaybackRoutingDialog::OnClose(wxCommandEvent &)
    if (changed > 0) {
       ProjectHistory::Get(mProject).PushState(
          (changed == 1)
-            ? XO("Changed playback routing for 1 track")
-            : XO("Changed playback routing for %d tracks").Format(changed),
-         XO("Routing"));
+            ? XO("Changed recording routing for 1 track")
+            : XO("Changed recording routing for %d tracks").Format(changed),
+         XO("Recording Routing"));
    }
    EndModal(wxID_OK);
 }
