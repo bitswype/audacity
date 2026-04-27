@@ -49,14 +49,14 @@ void SequenceDownmixSource::FindChannelFlags(unsigned char* channelFlags, size_t
         std::copy(map, map + numChannels, channelFlags);
     } else if (AudioGraph::IsMono(mSequence)) {
         std::fill(channelFlags, end, 1);
-    } else if (iChannel == 0) {
+    } else if (iChannel < numChannels) {
+        // Identity routing: source channel N -> output N.
+        // Generalises the previous L/R-only mapping to N channels.
+        channelFlags[iChannel] = 1;
+    } else {
+        // Source has more channels than the device.  Fold extras
+        // into output 0 rather than dropping them.
         channelFlags[0] = 1;
-    } else if (iChannel == 1) {
-        if (numChannels >= 2) {
-            channelFlags[1] = 1;
-        } else {
-            channelFlags[0] = 1;
-        }
     }
 }
 

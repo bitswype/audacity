@@ -231,6 +231,12 @@ struct WaveTrackData : ClientData::Cloneable<> {
     int GetRate() const;
     void SetRate(int value);
 
+    PlaybackOutputMask GetPlaybackOutputMask() const;
+    void SetPlaybackOutputMask(PlaybackOutputMask mask);
+
+    bool GetOutputMaskAttrSeen() const { return mOutputMaskAttrSeen; }
+    void SetOutputMaskAttrSeen(bool seen) { mOutputMaskAttrSeen = seen; }
+
 private:
     //! Atomic because it may be read by worker threads in playback
     std::atomic<float> mGain{ 1.0f };
@@ -240,6 +246,13 @@ private:
     int mRate{ 44100 };
     double mOrigin{ 0.0 };
     sampleFormat mFormat { floatSample };
+
+    //! 128-bit mask of device output channels this track routes to.
+    //! Read by the audio worker thread during playback; the seqlock
+    //! lets the GUI thread update without blocking.
+    AtomicPlaybackOutputMask mPlaybackOutputMask;
+    //! See WaveTrack::GetOutputMaskAttrSeen().
+    bool mOutputMaskAttrSeen{ true };
 };
 
 static const ChannelGroup::Attachments::RegisteredFactory
@@ -251,6 +264,8 @@ WaveTrackData::WaveTrackData(const WaveTrackData& other)
 {
     SetVolume(other.GetVolume());
     SetPan(other.GetPan());
+    SetPlaybackOutputMask(other.GetPlaybackOutputMask());
+    mOutputMaskAttrSeen = other.mOutputMaskAttrSeen;
     mRate = other.mRate;
     mOrigin = other.mOrigin;
     mFormat = other.mFormat;
@@ -321,6 +336,16 @@ int WaveTrackData::GetRate() const
 void WaveTrackData::SetRate(int value)
 {
     mRate = value;
+}
+
+PlaybackOutputMask WaveTrackData::GetPlaybackOutputMask() const
+{
+    return mPlaybackOutputMask.Load();
+}
+
+void WaveTrackData::SetPlaybackOutputMask(PlaybackOutputMask mask)
+{
+    mPlaybackOutputMask.Store(mask);
 }
 
 namespace {
@@ -2451,6 +2476,29 @@ bool WaveTrack::GetSolo() const
     return PlayableTrack::GetSolo();
 }
 
+PlaybackOutputMask WaveTrack::GetPlaybackOutputMask() const
+{
+    return WaveTrackData::Get(*this).GetPlaybackOutputMask();
+}
+
+void WaveTrack::SetPlaybackOutputMask(PlaybackOutputMask mask)
+{
+    if (GetPlaybackOutputMask() != mask) {
+        WaveTrackData::Get(*this).SetPlaybackOutputMask(mask);
+        Notify(true);
+    }
+}
+
+bool WaveTrack::GetOutputMaskAttrSeen() const
+{
+    return WaveTrackData::Get(*this).GetOutputMaskAttrSeen();
+}
+
+void WaveTrack::SetOutputMaskAttrSeen(bool seen)
+{
+    WaveTrackData::Get(*this).SetOutputMaskAttrSeen(seen);
+}
+
 const char* WaveTrack::WaveTrack_tag = "wavetrack";
 
 static constexpr auto Offset_attr = "offset";
@@ -2462,12 +2510,25 @@ static constexpr auto Pan_attr = "pan";
 static constexpr auto Linked_attr = "linked";
 static constexpr auto SampleFormat_attr = "sampleformat";
 static constexpr auto Channel_attr = "channel"; // write-only!
+//! Per-track playback output routing mask, written as two hex words
+//! for the 128-bit mask.  Always written on save (even when empty)
+//! so a freshly-loaded project can distinguish "user explicitly
+//! chose silent" (attrs present, mask empty) from "legacy project
+//! without routing metadata" (attrs absent, synthesize identity).
+static constexpr auto OutputMaskLo_attr = "outputmasklo";
+static constexpr auto OutputMaskHi_attr = "outputmaskhi";
 
 bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList& attrs)
 {
     if (tag == WaveTrack_tag) {
         double dblValue;
         long nValue;
+
+        // Start from "no outputmask attr seen".  If the attr loop below
+        // hits any outputmask* attribute, the track counts as having
+        // explicit routing metadata; otherwise the post-load migration
+        // synthesizes identity routing.
+        WaveTrackData::Get(*this).SetOutputMaskAttrSeen(false);
 
         for (const auto& pair : attrs) {
             const auto& attr = pair.first;
@@ -2496,6 +2557,22 @@ bool WaveTrack::HandleXMLTag(const std::string_view& tag, const AttributesList& 
                 DoSetPan(dblValue);
             } else if (attr == Linked_attr && value.TryGet(nValue)) {
                 SetLinkType(ToLinkType(nValue), false);
+            } else if (attr == OutputMaskLo_attr) {
+                unsigned long long v = 0;
+                if (value.TryGet(v)) {
+                    auto m = GetPlaybackOutputMask();
+                    m.lo = static_cast<uint64_t>(v);
+                    SetPlaybackOutputMask(m);
+                    WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
+                }
+            } else if (attr == OutputMaskHi_attr) {
+                unsigned long long v = 0;
+                if (value.TryGet(v)) {
+                    auto m = GetPlaybackOutputMask();
+                    m.hi = static_cast<uint64_t>(v);
+                    SetPlaybackOutputMask(m);
+                    WaveTrackData::Get(*this).SetOutputMaskAttrSeen(true);
+                }
             } else if (attr == SampleFormat_attr && value.TryGet(nValue)
                        && Sequence::IsValidSampleFormat(nValue)) {
                 //Remember sample format until consistency check is performed.
@@ -2622,6 +2699,24 @@ void WaveTrack::WriteOneXML(const WaveChannel& channel, XMLWriter& xmlFile,
         ? LinkType::Aligned
         : LinkType::None);
     xmlFile.WriteAttr(Linked_attr, linkType);
+
+    // Always write both words of the 128-bit routing mask on the
+    // channel-0 row.  "Always" (vs "only when non-empty") matters so
+    // that on reload we can distinguish "user explicitly chose silent"
+    // (empty mask with attrs present) from "legacy project with no
+    // routing metadata" (no attrs -> post-load migration synthesizes
+    // identity).  Format as %llu via wxString::Format -- the size_t
+    // overload of WriteAttr renders high-bit values as negative
+    // decimals and is unsafe for full 64-bit values.
+    if (iChannel == 0) {
+        const auto mask = track.GetPlaybackOutputMask();
+        xmlFile.WriteAttr(OutputMaskLo_attr,
+            wxString::Format(wxT("%llu"),
+                static_cast<unsigned long long>(mask.lo)));
+        xmlFile.WriteAttr(OutputMaskHi_attr,
+            wxString::Format(wxT("%llu"),
+                static_cast<unsigned long long>(mask.hi)));
+    }
 
     // VS: trying to save tracks that didn't pass all necessary
     // initializations on project read from the disk.

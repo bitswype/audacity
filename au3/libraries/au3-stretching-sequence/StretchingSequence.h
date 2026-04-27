@@ -52,6 +52,11 @@ public:
     bool GetSolo() const override;
     bool GetMute() const override;
 
+    //! Forwards to the wrapped sequence so per-track playback routing
+    //! masks (set on a WaveTrack) flow through this decorator to
+    //! AudioIO.  Without this override, masks would silently no-op.
+    PlaybackOutputMask GetPlaybackOutputMask() const override;
+
     // AudioGraph::Channel
     AudioGraph::ChannelType GetChannelType() const override;
 

@@ -492,6 +492,23 @@ public:
     bool GetMute() const override;
     bool GetSolo() const override;
 
+    //! 128-bit mask of device output channels this track routes to.
+    //! Bit N set means "play on output channel N".  Empty mask = silent.
+    //! There is no "auto routing" runtime state -- the mask is set
+    //! explicitly at track creation (identity bits by default) and
+    //! changed from there.
+    PlaybackOutputMask GetPlaybackOutputMask() const override;
+    void SetPlaybackOutputMask(PlaybackOutputMask mask);
+
+    //! True iff this track was loaded from XML that carried any
+    //! outputmask* attribute.  Tracks created in-app default true.
+    //! The post-load migration uses this flag to decide whether a
+    //! track's empty mask means "user chose silent" (seen=true) or
+    //! "upstream project without routing metadata" (seen=false,
+    //! synthesize identity).
+    bool GetOutputMaskAttrSeen() const;
+    void SetOutputMaskAttrSeen(bool seen);
+
     int64_t GetRecordableSequenceId() const override
     {
         return GetId();

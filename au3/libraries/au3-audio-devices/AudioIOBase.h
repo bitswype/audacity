@@ -410,6 +410,7 @@ extern AUDIO_DEVICES_API DoubleSetting AudioIOLatencyDuration;
 extern AUDIO_DEVICES_API StringSetting AudioIOPlaybackDevice;
 extern AUDIO_DEVICES_API StringSetting AudioIOPlaybackSource;
 extern AUDIO_DEVICES_API DoubleSetting AudioIOPlaybackVolume;
+extern AUDIO_DEVICES_API IntSetting AudioIOPlaybackChannels;
 extern AUDIO_DEVICES_API IntSetting AudioIORecordChannels;
 extern AUDIO_DEVICES_API StringSetting AudioIORecordingDevice;
 extern AUDIO_DEVICES_API StringSetting AudioIORecordingSource;

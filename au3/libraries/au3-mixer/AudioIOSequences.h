@@ -12,6 +12,7 @@
 #ifndef __AUDACITY_AUDIO_IO_SEQUENCES__
 #define __AUDACITY_AUDIO_IO_SEQUENCES__
 
+#include "PlaybackOutputMask.h"
 #include "WideSampleSequence.h"
 class ChannelGroup;
 
@@ -30,6 +31,14 @@ struct MIXER_API PlayableSequence : WideSampleSequence {
 
     //! May vary asynchronously
     virtual bool GetMute() const = 0;
+
+    //! 128-bit mask of device output channels this sequence plays on
+    //! during multi-channel playback.  Empty mask = silent.  WaveTrack
+    //! overrides this to forward the user's choice from the Playback
+    //! Routing dialog.  Decorators of PlayableSequence (e.g.
+    //! StretchingSequence) MUST forward this call or the routing
+    //! silently no-ops.
+    virtual PlaybackOutputMask GetPlaybackOutputMask() const { return {}; }
 };
 
 using ConstPlayableSequences
