@@ -1,5 +1,6 @@
 #include "au3trackeditproject.h"
 
+#include "au3-mixer/PlaybackOutputMask.h"
 #include "au3-track/Track.h"
 #include "au3-time-track/TimeTrack.h"
 #include "au3-numeric-formats/ProjectTimeSignature.h"
@@ -16,6 +17,37 @@
 using namespace muse;
 using namespace au::trackedit;
 using namespace au::au3;
+
+namespace {
+//! If the new wave track has no playback routing mask, assign it the
+//! lowest output channel bit not already occupied by any other wave
+//! track in the project.  Mirrors PlaybackRoutingListener on the
+//! audacity3 side: tracks created in-app pick up identity routing
+//! immediately so the user gets sensible defaults without touching
+//! the Routing Matrix.
+void MaterializeIdentityRouting(Au3Project& project, const au::trackedit::TrackId trackId)
+{
+    Au3WaveTrack* waveTrack = DomAccessor::findWaveTrack(
+        project, Au3TrackId(trackId));
+    if (!waveTrack || !waveTrack->GetPlaybackOutputMask().empty()) {
+        return;
+    }
+
+    PlaybackOutputMask occupied;
+    for (auto t : Au3TrackList::Get(project).Any<const Au3WaveTrack>()) {
+        const auto m = t->GetPlaybackOutputMask();
+        occupied.lo |= m.lo;
+        occupied.hi |= m.hi;
+    }
+    for (unsigned bit = 0; bit < kPlaybackOutputMaskBits; ++bit) {
+        if (!occupied.test(bit)) {
+            waveTrack->SetPlaybackOutputMask(
+                PlaybackOutputMask::Identity(bit, 1));
+            return;
+        }
+    }
+}
+}  // namespace
 
 struct Au3TrackeditProject::Au3Impl
 {
@@ -273,6 +305,7 @@ void Au3TrackeditProject::reload()
 
 void Au3TrackeditProject::notifyAboutTrackAdded(const Track& track)
 {
+    MaterializeIdentityRouting(*m_impl->prj, track.id);
     m_trackAdded.send(track);
 }
 
@@ -288,6 +321,7 @@ void Au3TrackeditProject::notifyAboutTrackRemoved(const Track& track)
 
 void Au3TrackeditProject::notifyAboutTrackInserted(const Track& track, int pos)
 {
+    MaterializeIdentityRouting(*m_impl->prj, track.id);
     m_trackInserted.send(track, pos);
 }
 
