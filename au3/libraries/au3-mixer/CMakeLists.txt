@@ -42,6 +42,8 @@ set( SOURCES
    MixerSource.h
    PlaybackOutputMask.cpp
    PlaybackOutputMask.h
+   RouteTrackSamples.cpp
+   RouteTrackSamples.h
    WideSampleSequence.cpp
    WideSampleSequence.h
    WideSampleSource.cpp
