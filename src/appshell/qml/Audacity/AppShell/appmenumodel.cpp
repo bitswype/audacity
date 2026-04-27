@@ -348,6 +348,8 @@ MenuItem* AppMenuModel::makeTracksMenu()
         makeSeparator(),
         makeMenu(TranslatableString("appshell/menu/align", "Align content"), makeAlignItems(), "menu-align", false),
         makeMenu(TranslatableString("appshell/menu/sort", "Sort tracks"), makeSortItems(), "menu-sort", false),
+        makeSeparator(),
+        makeMenuItem("playback-routing-matrix"),
     };
 
     return makeMenu(TranslatableString("appshell/menu/tracks", "&Tracks"), tracksItems, "menu-tracks");

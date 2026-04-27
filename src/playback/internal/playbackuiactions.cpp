@@ -193,6 +193,12 @@ const UiActionList PlaybackUiActions::m_mainActions = {
              TranslatableString("action", "Set loop region in out"),
              TranslatableString("action", "Set loop region in out")
              ),
+    UiAction("playback-routing-matrix",
+             au::context::UiCtxAny,
+             au::context::CTX_ANY,
+             TranslatableString("action", "Playback Routing Matrix..."),
+             TranslatableString("action", "Open the per-track playback routing matrix")
+             ),
     UiAction("toggle-selection-follows-loop-region",
              au::context::UiCtxAny,
              au::context::CTX_ANY,
