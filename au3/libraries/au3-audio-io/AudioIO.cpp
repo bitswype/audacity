@@ -811,10 +811,20 @@ void AudioIO::ConfigureCaptureRouting(size_t inputChannelsCount)
         return;
     }
 
+    // Collect the per-track input mask alongside the layout entry so the
+    // mask-driven branch below can decide on a per-track basis.
+    struct LayoutEntry {
+        PlaybackInputMask mask;
+    };
+    std::vector<LayoutEntry> layoutMeta;
+
     for (size_t trackIdx = 0; trackIdx < mCaptureSequences.size(); ++trackIdx) {
-        const auto nChannels = mCaptureSequences[trackIdx]->NChannels();
+        const auto& seq = mCaptureSequences[trackIdx];
+        const auto nChannels = seq->NChannels();
+        const auto mask = seq->GetPlaybackInputMask();
         for (size_t channelIdx = 0; channelIdx < nChannels; ++channelIdx) {
             mCaptureChannelLayout.push_back({ trackIdx, channelIdx });
+            layoutMeta.push_back({ mask });
         }
     }
 
@@ -826,7 +836,59 @@ void AudioIO::ConfigureCaptureRouting(size_t inputChannelsCount)
 
     mTrackChannelSourceMap.resize(captureChannelsCount);
 
-    // Only allow up/down mixing for mono<->stereo cases
+    const bool anyExplicitMask = std::any_of(layoutMeta.begin(), layoutMeta.end(),
+        [](const LayoutEntry& e) { return !e.mask.empty(); });
+
+    if (anyExplicitMask) {
+        // Mask-driven routing.  Walk each track group and consume its mask
+        // bits in low-to-high order, one bit per source-channel of the
+        // track.  Tracks whose mask is empty fall through to identity
+        // routing as a backstop so a partially-routed project still
+        // functions for unrouted tracks.
+        mCaptureNeedsMixdown = false;
+        size_t layoutIdx = 0;
+        while (layoutIdx < captureChannelsCount) {
+            const auto trackIdx = mCaptureChannelLayout[layoutIdx].sequenceIndex;
+            const auto& mask = layoutMeta[layoutIdx].mask;
+            const auto nChannels = mCaptureSequences[trackIdx]->NChannels();
+            if (!mask.empty()) {
+                size_t channelInTrack = 0;
+                const auto consume = [&](unsigned bit) {
+                    if (channelInTrack >= nChannels) {
+                        return;  // Mask has more bits than the track has channels.
+                    }
+                    if (bit < inputChannelsCount) {
+                        mTrackChannelSourceMap[layoutIdx + channelInTrack]
+                            .push_back(static_cast<size_t>(bit));
+                    }
+                    ++channelInTrack;
+                };
+                for (unsigned bit = 0; bit < 64; ++bit) {
+                    if (mask.lo & (uint64_t(1) << bit)) {
+                        consume(bit);
+                    }
+                }
+                for (unsigned bit = 0; bit < 64; ++bit) {
+                    if (mask.hi & (uint64_t(1) << bit)) {
+                        consume(64 + bit);
+                    }
+                }
+            } else {
+                // Identity backstop for unrouted tracks.
+                for (size_t c = 0; c < nChannels; ++c) {
+                    const size_t srcIdx = layoutIdx + c;
+                    if (srcIdx < inputChannelsCount) {
+                        mTrackChannelSourceMap[layoutIdx + c].push_back(srcIdx);
+                    }
+                }
+            }
+            layoutIdx += nChannels;
+        }
+        return;
+    }
+
+    // No track has an explicit input mask -- preserve the legacy
+    // mono/stereo up/downmix behavior.
     const bool canMix = (inputChannelsCount <= 2 && captureChannelsCount <= 2);
 
     if (canMix && inputChannelsCount == 2 && captureChannelsCount == 1) {
