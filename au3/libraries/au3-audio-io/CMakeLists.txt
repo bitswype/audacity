@@ -22,6 +22,10 @@ set( SOURCES
    ProjectAudioIO.h
    RingBuffer.cpp
    RingBuffer.h
+   TestToneGenerator.cpp
+   TestToneGenerator.h
+   TestToneRender.cpp
+   TestToneRender.h
 )
 set( LIBRARIES
    PRIVATE
