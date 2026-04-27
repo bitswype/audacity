@@ -24,6 +24,8 @@ set( TARGET au3-mixer )
 set( SOURCES
    AudioIOSequences.cpp
    AudioIOSequences.h
+   ChannelRouting.cpp
+   ChannelRouting.h
    DownmixSource.cpp
    DownmixSource.h
    DownmixStage.cpp
@@ -38,6 +40,8 @@ set( SOURCES
    MixerOptions.h
    MixerSource.cpp
    MixerSource.h
+   PlaybackOutputMask.cpp
+   PlaybackOutputMask.h
    WideSampleSequence.cpp
    WideSampleSequence.h
    WideSampleSource.cpp
