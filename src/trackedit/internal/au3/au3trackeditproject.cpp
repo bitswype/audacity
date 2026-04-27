@@ -1,5 +1,6 @@
 #include "au3trackeditproject.h"
 
+#include "au3-mixer/PlaybackInputMask.h"
 #include "au3-mixer/PlaybackOutputMask.h"
 #include "au3-track/Track.h"
 #include "au3-time-track/TimeTrack.h"
@@ -29,21 +30,40 @@ void MaterializeIdentityRouting(Au3Project& project, const au::trackedit::TrackI
 {
     Au3WaveTrack* waveTrack = DomAccessor::findWaveTrack(
         project, Au3TrackId(trackId));
-    if (!waveTrack || !waveTrack->GetPlaybackOutputMask().empty()) {
+    if (!waveTrack) {
         return;
     }
+    const auto& trackList = Au3TrackList::Get(project);
 
-    PlaybackOutputMask occupied;
-    for (auto t : Au3TrackList::Get(project).Any<const Au3WaveTrack>()) {
-        const auto m = t->GetPlaybackOutputMask();
-        occupied.lo |= m.lo;
-        occupied.hi |= m.hi;
+    if (waveTrack->GetPlaybackOutputMask().empty()) {
+        PlaybackOutputMask occupied;
+        for (auto t : trackList.Any<const Au3WaveTrack>()) {
+            const auto m = t->GetPlaybackOutputMask();
+            occupied.lo |= m.lo;
+            occupied.hi |= m.hi;
+        }
+        for (unsigned bit = 0; bit < kPlaybackOutputMaskBits; ++bit) {
+            if (!occupied.test(bit)) {
+                waveTrack->SetPlaybackOutputMask(
+                    PlaybackOutputMask::Identity(bit, 1));
+                break;
+            }
+        }
     }
-    for (unsigned bit = 0; bit < kPlaybackOutputMaskBits; ++bit) {
-        if (!occupied.test(bit)) {
-            waveTrack->SetPlaybackOutputMask(
-                PlaybackOutputMask::Identity(bit, 1));
-            return;
+
+    if (waveTrack->GetPlaybackInputMask().empty()) {
+        PlaybackInputMask occupied;
+        for (auto t : trackList.Any<const Au3WaveTrack>()) {
+            const auto m = t->GetPlaybackInputMask();
+            occupied.lo |= m.lo;
+            occupied.hi |= m.hi;
+        }
+        for (unsigned bit = 0; bit < kPlaybackInputMaskBits; ++bit) {
+            if (!occupied.test(bit)) {
+                waveTrack->SetPlaybackInputMask(
+                    PlaybackInputMask::Identity(bit, 1));
+                break;
+            }
         }
     }
 }

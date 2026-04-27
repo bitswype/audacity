@@ -509,6 +509,19 @@ public:
     bool GetOutputMaskAttrSeen() const;
     void SetOutputMaskAttrSeen(bool seen);
 
+    //! 128-bit mask of device input channels feeding this track during
+    //! recording.  Bit N set means "device input channel N feeds this
+    //! track".  Empty mask = "this track is not a recording target".
+    //! For multi-channel tracks the set bits walk in low-to-high order
+    //! to source channels 0, 1, ..., NChannels()-1.
+    PlaybackInputMask GetPlaybackInputMask() const override;
+    void SetPlaybackInputMask(PlaybackInputMask mask);
+
+    //! Same legacy-vs-explicit semantics as GetOutputMaskAttrSeen, on
+    //! the recording side.
+    bool GetInputMaskAttrSeen() const;
+    void SetInputMaskAttrSeen(bool seen);
+
     int64_t GetRecordableSequenceId() const override
     {
         return GetId();

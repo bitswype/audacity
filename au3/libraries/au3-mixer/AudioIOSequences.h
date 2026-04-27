@@ -12,6 +12,7 @@
 #ifndef __AUDACITY_AUDIO_IO_SEQUENCES__
 #define __AUDACITY_AUDIO_IO_SEQUENCES__
 
+#include "PlaybackInputMask.h"
 #include "PlaybackOutputMask.h"
 #include "WideSampleSequence.h"
 class ChannelGroup;
@@ -82,6 +83,11 @@ struct MIXER_API RecordableSequence {
     virtual void InsertSilence(double t, double len) = 0;
 
     virtual int64_t GetRecordableSequenceId() const = 0;
+
+    //! 128-bit mask of device input channels feeding this recordable
+    //! sequence.  Empty mask means "use legacy 1:1 input routing".
+    //! WaveTrack overrides to return its stored mask.
+    virtual PlaybackInputMask GetPlaybackInputMask() const { return {}; }
 };
 
 using RecordableSequences = std::vector<std::shared_ptr<RecordableSequence> >;
