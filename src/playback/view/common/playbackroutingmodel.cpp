@@ -47,6 +47,29 @@ int PlaybackRoutingModel::channelCount() const
     return m_channelCount;
 }
 
+int PlaybackRoutingModel::displayChannelCount() const
+{
+    int highestSet = m_channelCount;
+    for (const auto& row : m_rows) {
+        // Find the position of the highest set bit across the 128-bit mask.
+        for (int bit = kMaxChannelCount - 1; bit >= highestSet; --bit) {
+            const bool set = (bit < 64)
+                ? ((row.lo & (uint64_t(1) << bit)) != 0)
+                : ((row.hi & (uint64_t(1) << (bit - 64))) != 0);
+            if (set) {
+                highestSet = bit + 1;
+                break;
+            }
+        }
+    }
+    return std::min(highestSet, kMaxChannelCount);
+}
+
+bool PlaybackRoutingModel::isDeviceChannel(int channel) const
+{
+    return channel >= 0 && channel < m_channelCount;
+}
+
 QString PlaybackRoutingModel::trackName(int trackIndex) const
 {
     if (trackIndex < 0 || trackIndex >= static_cast<int>(m_rows.size())) {

@@ -25,6 +25,10 @@ class PlaybackRoutingModel : public QObject, public muse::async::Asyncable, publ
     Q_OBJECT
     Q_PROPERTY(int trackCount READ trackCount NOTIFY tracksChanged FINAL)
     Q_PROPERTY(int channelCount READ channelCount NOTIFY channelCountChanged FINAL)
+    //! Number of columns the dialog should display: the device channel
+    //! count expanded to include any track's highest set bit (capped at
+    //! 128).  Lets the user see and clear bits beyond the current device.
+    Q_PROPERTY(int displayChannelCount READ displayChannelCount NOTIFY channelCountChanged FINAL)
 
     muse::ContextInject<context::IGlobalContext> globalContext = { this };
 
@@ -35,10 +39,14 @@ public:
 
     int trackCount() const;
     int channelCount() const;
+    int displayChannelCount() const;
 
     Q_INVOKABLE QString trackName(int trackIndex) const;
     Q_INVOKABLE bool isRouted(int trackIndex, int channel) const;
     Q_INVOKABLE void setRouted(int trackIndex, int channel, bool on);
+    //! True iff @p channel is within the active device channel count.
+    //! False = off-device, displayed with an asterisk by the dialog.
+    Q_INVOKABLE bool isDeviceChannel(int channel) const;
 
     Q_INVOKABLE void resetIdentity();
     Q_INVOKABLE void clearAll();

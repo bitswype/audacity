@@ -54,16 +54,19 @@ StyledDialogView {
                 id: matrixGrid
                 rowSpacing: 4
                 columnSpacing: 8
-                columns: routingModel.channelCount + 1
+                columns: routingModel.displayChannelCount + 1
 
                 // Header row: blank + numbered columns
                 Item { implicitWidth: 160; implicitHeight: 24 }
                 Repeater {
-                    model: routingModel.channelCount
+                    model: routingModel.displayChannelCount
                     StyledTextLabel {
-                        text: (modelData + 1).toString()
+                        text: routingModel.isDeviceChannel(modelData)
+                            ? (modelData + 1).toString()
+                            : (modelData + 1).toString() + "*"
                         horizontalAlignment: Text.AlignHCenter
                         Layout.preferredWidth: 28
+                        opacity: routingModel.isDeviceChannel(modelData) ? 1.0 : 0.6
                     }
                 }
 
@@ -75,6 +78,15 @@ StyledDialogView {
                     }
                 }
             }
+        }
+
+        StyledTextLabel {
+            id: offDeviceNotice
+            visible: routingModel.displayChannelCount > routingModel.channelCount
+            text: qsTrc("playback", "Columns marked with * route to channels beyond the current playback device (%1 channels).  Those bits are silent until you switch to a device with more outputs.").arg(routingModel.channelCount)
+            wrapMode: Text.Wrap
+            opacity: 0.7
+            Layout.fillWidth: true
         }
 
         component TrackRow : Row {
@@ -93,10 +105,11 @@ StyledDialogView {
             }
 
             Repeater {
-                model: routingModel.channelCount
+                model: routingModel.displayChannelCount
                 delegate: CheckBox {
                     width: 28
                     checked: routingModel.isRouted(trackRow.trackIndex, modelData)
+                    opacity: routingModel.isDeviceChannel(modelData) ? 1.0 : 0.6
                     onToggled: routingModel.setRouted(trackRow.trackIndex, modelData, checked)
 
                     Connections {

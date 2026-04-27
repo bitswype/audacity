@@ -67,6 +67,59 @@ void MaterializeIdentityRouting(Au3Project& project, const au::trackedit::TrackI
         }
     }
 }
+
+//! Iterate every wave track in a freshly-loaded project and assign
+//! identity routing to any track whose XML carried no outputmask*
+//! or inputmask* attrs (i.e. a legacy / pre-routing project).  Tracks
+//! whose XML did carry attrs keep whatever the user saved -- including
+//! an explicitly empty (silent) mask.  Walks tracks in TrackList order
+//! so the bit assignment is stable across loads of the same project.
+void MaterializeLegacyProjectRouting(Au3Project& project)
+{
+    auto& trackList = Au3TrackList::Get(project);
+    PlaybackOutputMask outOccupied;
+    PlaybackInputMask inOccupied;
+    // First pass: gather already-explicit bits so we don't reuse them.
+    for (auto t : trackList.Any<const Au3WaveTrack>()) {
+        if (t->GetOutputMaskAttrSeen()) {
+            const auto m = t->GetPlaybackOutputMask();
+            outOccupied.lo |= m.lo;
+            outOccupied.hi |= m.hi;
+        }
+        if (t->GetInputMaskAttrSeen()) {
+            const auto m = t->GetPlaybackInputMask();
+            inOccupied.lo |= m.lo;
+            inOccupied.hi |= m.hi;
+        }
+    }
+    // Second pass: fill identity for the legacy tracks.
+    for (auto t : trackList.Any<Au3WaveTrack>()) {
+        if (!t->GetOutputMaskAttrSeen() && t->GetPlaybackOutputMask().empty()) {
+            for (unsigned bit = 0; bit < kPlaybackOutputMaskBits; ++bit) {
+                if (!outOccupied.test(bit)) {
+                    t->SetPlaybackOutputMask(
+                        PlaybackOutputMask::Identity(bit, 1));
+                    outOccupied.lo |= (bit < 64 ? (uint64_t(1) << bit) : 0);
+                    outOccupied.hi |= (bit >= 64 ? (uint64_t(1) << (bit - 64)) : 0);
+                    break;
+                }
+            }
+            t->SetOutputMaskAttrSeen(true);
+        }
+        if (!t->GetInputMaskAttrSeen() && t->GetPlaybackInputMask().empty()) {
+            for (unsigned bit = 0; bit < kPlaybackInputMaskBits; ++bit) {
+                if (!inOccupied.test(bit)) {
+                    t->SetPlaybackInputMask(
+                        PlaybackInputMask::Identity(bit, 1));
+                    inOccupied.lo |= (bit < 64 ? (uint64_t(1) << bit) : 0);
+                    inOccupied.hi |= (bit >= 64 ? (uint64_t(1) << (bit - 64)) : 0);
+                    break;
+                }
+            }
+            t->SetInputMaskAttrSeen(true);
+        }
+    }
+}
 }  // namespace
 
 struct Au3TrackeditProject::Au3Impl
@@ -86,6 +139,12 @@ Au3TrackeditProject::Au3TrackeditProject(const muse::modularity::ContextPtr& ctx
     m_impl = std::make_shared<Au3Impl>();
     m_impl->prj = reinterpret_cast<Au3Project*>(au3project->au3ProjectPtr());
     m_impl->trackList = &Au3TrackList::Get(*m_impl->prj);
+    // Project-load identity migration: any wave track loaded from XML
+    // without outputmask*/inputmask* attrs (legacy project) gets
+    // identity routing now, matching the behavior new tracks get from
+    // notifyAboutTrackAdded.  Run BEFORE subscribing to TrackListEvent
+    // so the subscription doesn't double-handle the existing tracks.
+    MaterializeLegacyProjectRouting(*m_impl->prj);
     m_impl->tracksSubc = m_impl->trackList->Subscribe([this](const TrackListEvent& e) {
         onTrackListEvent(e);
     });
