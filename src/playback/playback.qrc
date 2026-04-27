@@ -11,5 +11,6 @@
         <file>qml/Audacity/Playback/dialogs/LoopRegionInOut.qml</file>
         <file>qml/Audacity/Playback/dialogs/PlaybackRoutingMatrixDialog.qml</file>
         <file>qml/Audacity/Playback/dialogs/RecordingRoutingMatrixDialog.qml</file>
+        <file>qml/Audacity/Playback/dialogs/ChannelTestToneDialog.qml</file>
     </qresource>
 </RCC>

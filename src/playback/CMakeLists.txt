@@ -57,6 +57,8 @@ set(MODULE_SRC
     ${CMAKE_CURRENT_LIST_DIR}/view/common/playbackroutingmodel.h
     ${CMAKE_CURRENT_LIST_DIR}/view/common/recordingroutingmodel.cpp
     ${CMAKE_CURRENT_LIST_DIR}/view/common/recordingroutingmodel.h
+    ${CMAKE_CURRENT_LIST_DIR}/view/common/channeltestonemodel.cpp
+    ${CMAKE_CURRENT_LIST_DIR}/view/common/channeltestonemodel.h
 
     ${CMAKE_CURRENT_LIST_DIR}/view/panels/playbackmeterpanelmodel.cpp
     ${CMAKE_CURRENT_LIST_DIR}/view/panels/playbackmeterpanelmodel.h

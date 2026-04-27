@@ -205,6 +205,12 @@ const UiActionList PlaybackUiActions::m_mainActions = {
              TranslatableString("action", "Recording Routing Matrix..."),
              TranslatableString("action", "Open the per-track recording routing matrix")
              ),
+    UiAction("channel-test-tone",
+             au::context::UiCtxAny,
+             au::context::CTX_ANY,
+             TranslatableString("action", "Channel Test Tone..."),
+             TranslatableString("action", "Open the channel test tone dialog")
+             ),
     UiAction("toggle-selection-follows-loop-region",
              au::context::UiCtxAny,
              au::context::CTX_ANY,

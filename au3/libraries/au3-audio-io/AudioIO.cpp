@@ -979,6 +979,102 @@ void AudioIO::StopMonitoring()
     }
 }
 
+bool AudioIO::StartTestTone(const TestToneRequest& request,
+    const AudioIOStartStreamOptions& options)
+{
+    if (IsBusy()) {
+        return false;
+    }
+    if (mTestToneActive.load(std::memory_order_relaxed)) {
+        UpdateTestTone(request);
+        return true;
+    }
+
+    // Snapshot request parameters into the atomic state so the audio
+    // callback reads consistent values.
+    mTestToneMode.store(static_cast<int>(request.mode),
+        std::memory_order_relaxed);
+    mTestToneType.store(static_cast<int>(request.toneType),
+        std::memory_order_relaxed);
+    uint64_t freqBits = 0;
+    std::memcpy(&freqBits, &request.frequencyHz, sizeof(double));
+    mTestToneFreqBits.store(freqBits, std::memory_order_relaxed);
+    uint64_t levelBits = 0;
+    std::memcpy(&levelBits, &request.levelDb, sizeof(double));
+    mTestToneLevelDbBits.store(levelBits, std::memory_order_relaxed);
+    mTestToneMask.Store(request.mask);
+
+    // Reconfigure the synth.  Phase / pink history reset only on
+    // Start, not on Update (so retuning is glitch-free).
+    mTestToneGen.Configure(request.toneType, request.frequencyHz,
+        request.levelDb, options.rate);
+    mTestToneGen.Reset();
+
+    // Pre-size scratch.  Worst-case framesPerBuffer is bounded by the
+    // hardware playback latency configured on the engine.  Use the
+    // device-native channel count for the per-output buffers.
+    constexpr size_t kWorstCaseFrames = 16384;
+    mTestToneSrcBuf.assign(kWorstCaseFrames, 0.0f);
+
+    mUsingAlsa = false;
+    const auto playbackChannels = AudioIOPlaybackChannels.ReadWithDefault(2);
+    const bool success = StartPortAudioStream(options,
+        static_cast<unsigned int>(playbackChannels), 0u);
+    if (!success) {
+        ResetOwningProject();
+        return false;
+    }
+
+    // Now we know mDevicePlaybackChannels.
+    mTestToneOutBufs.assign(mDevicePlaybackChannels,
+        std::vector<float>(kWorstCaseFrames, 0.0f));
+    mTestToneDstPtrs.assign(mDevicePlaybackChannels, nullptr);
+    for (size_t c = 0; c < mDevicePlaybackChannels; ++c) {
+        mTestToneDstPtrs[c] = mTestToneOutBufs[c].data();
+    }
+
+    mTestToneActive.store(true, std::memory_order_release);
+
+    mLastPaError = Pa_StartStream(mPortStreamV19);
+    if (mLastPaError != paNoError) {
+        mTestToneActive.store(false, std::memory_order_relaxed);
+        ResetOwningProject();
+        return false;
+    }
+    return true;
+}
+
+void AudioIO::UpdateTestTone(const TestToneRequest& request)
+{
+    if (!mTestToneActive.load(std::memory_order_relaxed)) {
+        return;
+    }
+    mTestToneMode.store(static_cast<int>(request.mode),
+        std::memory_order_relaxed);
+    mTestToneType.store(static_cast<int>(request.toneType),
+        std::memory_order_relaxed);
+    uint64_t freqBits = 0;
+    std::memcpy(&freqBits, &request.frequencyHz, sizeof(double));
+    mTestToneFreqBits.store(freqBits, std::memory_order_relaxed);
+    uint64_t levelBits = 0;
+    std::memcpy(&levelBits, &request.levelDb, sizeof(double));
+    mTestToneLevelDbBits.store(levelBits, std::memory_order_relaxed);
+    mTestToneMask.Store(request.mask);
+    // The audio thread re-reads these atomics each block via
+    // FillTestToneOutputBuffer and re-Configures the generator.
+}
+
+void AudioIO::StopTestTone()
+{
+    if (!mTestToneActive.load(std::memory_order_relaxed)) {
+        return;
+    }
+    mTestToneActive.store(false, std::memory_order_release);
+    StopStream();
+    WaitWhileBusy();
+    ResetOwningProject();
+}
+
 void AudioIO::WaitWhileBusy() const
 {
     while (IsBusy()) {
@@ -2872,6 +2968,48 @@ void ClampBuffer(float* pBuffer, unsigned long len)
 // Mix and copy to PortAudio's output buffer
 // from our intermediate playback buffers
 //
+void AudioIoCallback::FillTestToneOutputBuffer(
+    float* outputFloats,
+    unsigned long framesPerBuffer,
+    float* outputMeterFloats)
+{
+    // Re-read parameters each block so live UI changes take effect
+    // without restarting the stream.
+    TestToneRequest request;
+    request.mode = static_cast<TestToneRequest::Mode>(
+        mTestToneMode.load(std::memory_order_relaxed));
+    request.toneType = static_cast<TestToneGenerator::Type>(
+        mTestToneType.load(std::memory_order_relaxed));
+    const uint64_t freqBits = mTestToneFreqBits.load(std::memory_order_relaxed);
+    const uint64_t levelBits = mTestToneLevelDbBits.load(std::memory_order_relaxed);
+    std::memcpy(&request.frequencyHz, &freqBits, sizeof(double));
+    std::memcpy(&request.levelDb, &levelBits, sizeof(double));
+    request.mask = mTestToneMask.Load();
+
+    mTestToneGen.Configure(request.toneType, request.frequencyHz,
+        request.levelDb, mRate);
+
+    TestToneRenderParams params;
+    params.mode = request.mode;
+    params.mask = request.mask;
+    params.numPlaybackChannels = mNumPlaybackChannels;
+    params.devicePlaybackChannels = mDevicePlaybackChannels;
+
+    // Zero the output buffer first (the renderer adds with += so we
+    // own the initial state).
+    std::fill(outputFloats,
+        outputFloats + framesPerBuffer * mDevicePlaybackChannels, 0.0f);
+
+    RenderTestToneInterleaved(
+        params, mTestToneGen, framesPerBuffer, outputFloats,
+        mTestToneSrcBuf, mTestToneOutBufs, mTestToneDstPtrs);
+
+    if (outputMeterFloats != outputFloats) {
+        std::memcpy(outputMeterFloats, outputFloats,
+            framesPerBuffer * mDevicePlaybackChannels * sizeof(float));
+    }
+}
+
 bool AudioIoCallback::FillOutputBuffers(
     float* outputFloats,
     unsigned long framesPerBuffer,
@@ -3494,6 +3632,14 @@ int AudioIoCallback::AudioCallback(
     // Test for no sequence audio to play (because we are paused and have faded
     // out)
     if (IsPaused() && ((!mbMicroFades) || mOldPlaybackVolume == 0.0f)) {
+        return mCallbackReturn;
+    }
+
+    // Test tone path: when mTestToneActive is set, the synth fills the
+    // output buffer instead of running the normal playback pipeline.
+    if (mTestToneActive.load(std::memory_order_acquire)) {
+        FillTestToneOutputBuffer(outputBuffer, framesPerBuffer, outputMeterFloats);
+        SendVuOutputMeterData(outputMeterFloats, framesPerBuffer, levelDisplayTime);
         return mCallbackReturn;
     }
 

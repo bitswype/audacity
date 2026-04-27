@@ -351,6 +351,7 @@ MenuItem* AppMenuModel::makeTracksMenu()
         makeSeparator(),
         makeMenuItem("playback-routing-matrix"),
         makeMenuItem("recording-routing-matrix"),
+        makeMenuItem("channel-test-tone"),
     };
 
     return makeMenu(TranslatableString("appshell/menu/tracks", "&Tracks"), tracksItems, "menu-tracks");

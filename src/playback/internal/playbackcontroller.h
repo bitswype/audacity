@@ -139,6 +139,7 @@ private:
 
     void openPlaybackRoutingMatrix();
     void openRecordingRoutingMatrix();
+    void openChannelTestTone();
 
     void setAudioApi(const muse::actions::ActionQuery& q);
     void setAudioOutputDevice(const muse::actions::ActionQuery& q);

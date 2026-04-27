@@ -54,6 +54,7 @@ void PlaybackController::init()
     dispatcher()->reg(this, "set-loop-region-in-out", this, &PlaybackController::setLoopRegionInOut);
     dispatcher()->reg(this, "playback-routing-matrix", this, &PlaybackController::openPlaybackRoutingMatrix);
     dispatcher()->reg(this, "recording-routing-matrix", this, &PlaybackController::openRecordingRoutingMatrix);
+    dispatcher()->reg(this, "channel-test-tone", this, &PlaybackController::openChannelTestTone);
     dispatcher()->reg(this, "toggle-selection-follows-loop-region", this, &PlaybackController::setSelectionFollowsLoopRegion);
 
     dispatcher()->reg(this, "rescan-devices", this, &PlaybackController::rescanAudioDevices);
@@ -652,6 +653,11 @@ void PlaybackController::openPlaybackRoutingMatrix()
 void PlaybackController::openRecordingRoutingMatrix()
 {
     interactive()->openSync(muse::UriQuery("audacity://playback/recording_routing_matrix"));
+}
+
+void PlaybackController::openChannelTestTone()
+{
+    interactive()->openSync(muse::UriQuery("audacity://playback/channel_test_tone"));
 }
 
 void PlaybackController::setSelectionFollowsLoopRegion()
