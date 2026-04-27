@@ -561,11 +561,24 @@ bool AudioIO::StartPortAudioStream(const AudioIOStartStreamOptions& options,
         // regardless of source formats, we always mix to float
         playbackParameters.sampleFormat = paFloat32;
         playbackParameters.hostApiSpecificStreamInfo = NULL;
-        playbackParameters.channelCount = mNumPlaybackChannels;
 
         const PaHostApiInfo* hostInfo = Pa_GetHostApiInfo(playbackDeviceInfo->hostApi);
         bool isWASAPI = (hostInfo && hostInfo->type == paWASAPI);
         bool isMME = (hostInfo && hostInfo->type == paMME);
+        const bool isALSA = (hostInfo && hostInfo->type == paALSA);
+
+        // ALSA's PortAudio backend duplicates the last channel of an
+        // odd-count stream when the device has an even channel count
+        // (DoChannelAdaption).  Sidestep by opening with the device's
+        // native channel count and zeroing the unused channels in the
+        // output callback.  Other host APIs honor channelCount as
+        // requested.
+        if (isALSA) {
+            mDevicePlaybackChannels = playbackDeviceInfo->maxOutputChannels;
+        } else {
+            mDevicePlaybackChannels = mNumPlaybackChannels;
+        }
+        playbackParameters.channelCount = mDevicePlaybackChannels;
 
       #ifdef __WXMSW__
         // If the host API is WASAPI, the stream is bidirectional and there is no
@@ -998,6 +1011,17 @@ int AudioIO::StartStream(const TransportSequences& sequences,
         sequences.playbackSequences.begin(),
         sequences.playbackSequences.end()
     };
+    // Snapshot per-track output masks now so the audio worker thread
+    // doesn't have to read atomics on the hot path.  Empty mask means
+    // the track is silent in this stream.
+    {
+        std::vector<PlaybackOutputMask> trackOutputMasks;
+        trackOutputMasks.reserve(mPlaybackSequences.size());
+        for (const auto& seq : mPlaybackSequences) {
+            trackOutputMasks.push_back(seq->GetPlaybackOutputMask());
+        }
+        mChannelAssignments = ComputeChannelAssignments(trackOutputMasks);
+    }
     ResetCaptureRouting();
 
     bool commit = false;
@@ -1438,10 +1462,8 @@ bool AudioIO::AllocateBuffers(
             const size_t playbackBufferSize = std::max((size_t)lrint(
                                                            mRate * mPlaybackRingBufferSecs.count()), mHardwarePlaybackLatencyFrames * 2);
             for (auto& track : mPlaybackTracks) {
-                for (auto& buffer : track.mBuffers) {
-                    buffer.reset();
-                }
-
+                track.mBuffers.clear();
+                track.mBuffers.resize(mNumPlaybackChannels);
                 for (size_t i = 0; i < mNumPlaybackChannels; ++i) {
                     track.mBuffers[i] = std::make_unique<RingBuffer>(
                         floatSample, playbackBufferSize);
@@ -1779,6 +1801,8 @@ void AudioIO::StopStream()
 
     mNumCaptureChannels = 0;
     mNumPlaybackChannels = 0;
+    mDevicePlaybackChannels = 0;
+    mChannelAssignments.clear();
 
     mPlaybackSequences.clear();
     mCaptureSequences.clear();
@@ -2253,6 +2277,7 @@ bool AudioIO::ProcessPlaybackSlices(
 
     {
         unsigned bufferIndex = 0;
+        size_t trackIndex = 0;
         for (auto& track :  mPlaybackTracks) {
             auto seq = track.mSequence;
             if (!seq) {
@@ -2261,7 +2286,40 @@ bool AudioIO::ProcessPlaybackSlices(
 
             auto& buffers = track.mBuffers;
             const auto numChannels = seq->NChannels();
-            if (numChannels > 1) {
+
+            const TrackChannelAssignment assignment =
+                (trackIndex < mChannelAssignments.size())
+                ? mChannelAssignments[trackIndex]
+                : TrackChannelAssignment {};
+
+            if (!assignment.outputMask.empty()) {
+                // Mask-driven routing.  Distribution logic is in
+                // RouteTrackSamples (lib-mixer) so it can be unit-tested
+                // in isolation.
+                std::vector<float*> procBufs(numChannels);
+                for (size_t c = 0; c < numChannels; ++c) {
+                    procBufs[c] = mProcessingBuffers[bufferIndex + c].data();
+                }
+                std::vector<float*> masterBufs(mNumPlaybackChannels);
+                for (size_t c = 0; c < mNumPlaybackChannels; ++c) {
+                    masterBufs[c] = mMasterBuffers[c].data();
+                }
+                RouteTrackSamples(
+                    assignment, numChannels, mNumPlaybackChannels,
+                    samplesAvailable,
+                    [&seq](int ch) { return seq->GetChannelVolume(ch); },
+                    procBufs.data(), masterBufs.data());
+
+                // Per-track ring buffer copy (one entry per source
+                // channel).
+                for (unsigned n = 0; n < numChannels; ++n) {
+                    buffers[n]->Put(
+                        reinterpret_cast<constSamplePtr>(
+                            mProcessingBuffers[bufferIndex + n].data()),
+                        floatSample,
+                        samplesAvailable, 0);
+                }
+            } else if (numChannels > 1) {
                 for (unsigned n = 0, cnt = std::min(numChannels, mNumPlaybackChannels); n < cnt; ++n) {
                     const float volume = seq->GetChannelVolume(n);
                     for (unsigned i = 0; i < samplesAvailable; ++i) {
@@ -2304,6 +2362,7 @@ bool AudioIO::ProcessPlaybackSlices(
                 }
             }
             bufferIndex += seq->NChannels();
+            ++trackIndex;
         }
     }
 
@@ -2869,7 +2928,7 @@ bool AudioIoCallback::FillOutputBuffers(
             // apply volume, then copy to the output buffer
             if (outputMeterFloats != outputFloats) {
                 for ( unsigned i = 0; i < numberOfRetrievedFrames; ++i) {
-                    outputMeterFloats[numPlaybackChannels * i + n]
+                    outputMeterFloats[mDevicePlaybackChannels * i + n]
                         +=playbackVolume * tempBufs[n][i];
                 }
             }
@@ -2886,7 +2945,7 @@ bool AudioIoCallback::FillOutputBuffers(
             // opaque ways
             const float deltaVolume = (playbackVolume - oldVolume) / numberOfRetrievedFrames;
             for (unsigned i = 0; i < numberOfRetrievedFrames; i++) {
-                outputFloats[numPlaybackChannels * i + n]
+                outputFloats[mDevicePlaybackChannels * i + n]
                     +=(oldVolume + deltaVolume * i) * tempBufs[n][i];
             }
         }
@@ -2899,9 +2958,9 @@ bool AudioIoCallback::FillOutputBuffers(
 
     mLastPlaybackTimeMillis = ::wxGetUTCTimeMillis();
 
-    ClampBuffer(outputFloats, framesPerBuffer * numPlaybackChannels);
+    ClampBuffer(outputFloats, framesPerBuffer * mDevicePlaybackChannels);
     if (outputMeterFloats != outputFloats) {
-        ClampBuffer(outputMeterFloats, framesPerBuffer * numPlaybackChannels);
+        ClampBuffer(outputMeterFloats, framesPerBuffer * mDevicePlaybackChannels);
     }
 
     return false;
@@ -3090,7 +3149,10 @@ void AudioIoCallback::DoPlaythrough(
     float* outputMeterFloats)
 {
     const auto numCaptureChannels = mNumCaptureChannels;
-    const auto numPlaybackChannels = mNumPlaybackChannels;
+    // Use the device-level channel count for buffer arithmetic so any
+    // device-side padding (e.g. ALSA's odd-channel adaptation) is
+    // also zeroed.
+    const auto numPlaybackChannels = mDevicePlaybackChannels;
 
     // Quick returns if next to nothing to do.
     if (!outputBuffer) {

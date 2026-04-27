@@ -15,6 +15,8 @@
 
 #include "au3-audio-devices/AudioIOBase.h" // to inherit
 #include "au3-mixer/AudioIOSequences.h"
+#include "au3-mixer/ChannelRouting.h"
+#include "au3-mixer/RouteTrackSamples.h"
 #include "PlaybackSchedule.h" // member variable
 #include "RingBuffer.h"
 #include "au3-utility/LockFreeQueue.h"
@@ -159,10 +161,11 @@ public:
         };
     }
 
-    static constexpr size_t MaxPlaybackChannels = 2;
+    // Per-track ring buffers, sized dynamically to mNumPlaybackChannels
+    // in AllocateBuffers.  Was hardcoded to a stereo std::array<,2>.
     struct Track {
         std::shared_ptr<const PlayableSequence> mSequence;
-        std::array<std::unique_ptr<RingBuffer>, MaxPlaybackChannels> mBuffers;
+        std::vector<std::unique_ptr<RingBuffer> > mBuffers;
 
         Track(std::shared_ptr<const PlayableSequence> sequence);
         ~Track();
@@ -293,6 +296,14 @@ public:
     size_t mNumCaptureChannels;
     /*! Read by a worker thread but unchanging during playback */
     size_t mNumPlaybackChannels;
+    /*! Actual channel count opened with PortAudio.  May exceed
+        mNumPlaybackChannels on ALSA so PortAudio doesn't apply its
+        odd-channel duplication adaptation. */
+    size_t mDevicePlaybackChannels{ 0 };
+    /*! Per-track output channel assignments, snapshotted from track
+        masks at StartStream.  Indexed by playback-track index.
+        See ChannelRouting.h for the routing rules. */
+    std::vector<TrackChannelAssignment> mChannelAssignments;
     sampleFormat mCaptureFormat;
     double mCaptureRate{};
     unsigned long long mLostSamples{ 0 };
@@ -521,6 +532,7 @@ public:
 
     sampleFormat GetCaptureFormat() const { return mCaptureFormat; }
     size_t GetNumPlaybackChannels() const { return mNumPlaybackChannels; }
+    size_t GetNumDevicePlaybackChannels() const { return mDevicePlaybackChannels; }
     size_t GetNumCaptureChannels() const { return mNumCaptureChannels; }
     int GetHardwarePlaybackLatencyMs() const { return mHardwarePlaybackLatencyMs; }
     int GetHardwareCaptureLatencyMs() const { return mHardwareCaptureLatencyMs; }
