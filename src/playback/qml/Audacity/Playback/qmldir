@@ -11,3 +11,4 @@ PlaybackLevel 1.0 toolbars/PlaybackLevel.qml
 PlaybackMeterPanel 1.0 panels/PlaybackMeterPanel.qml
 
 LoopRegionInOut 1.0 dialogs/LoopRegionInOut.qml
+PlaybackRoutingMatrixDialog 1.0 dialogs/PlaybackRoutingMatrixDialog.qml

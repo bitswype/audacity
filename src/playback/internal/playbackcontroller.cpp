@@ -52,6 +52,7 @@ void PlaybackController::init()
     dispatcher()->reg(this, "set-loop-region-to-selection", this, &PlaybackController::setLoopRegionToSelection);
     dispatcher()->reg(this, "set-selection-to-loop", this, &PlaybackController::setSelectionToLoop);
     dispatcher()->reg(this, "set-loop-region-in-out", this, &PlaybackController::setLoopRegionInOut);
+    dispatcher()->reg(this, "playback-routing-matrix", this, &PlaybackController::openPlaybackRoutingMatrix);
     dispatcher()->reg(this, "toggle-selection-follows-loop-region", this, &PlaybackController::setSelectionFollowsLoopRegion);
 
     dispatcher()->reg(this, "rescan-devices", this, &PlaybackController::rescanAudioDevices);
@@ -640,6 +641,11 @@ void PlaybackController::setLoopRegionInOut()
     QVariantMap vals = rv.val.toQVariant().toMap();
 
     player()->setLoopRegion({ vals["start"].toDouble(), vals["end"].toDouble() });
+}
+
+void PlaybackController::openPlaybackRoutingMatrix()
+{
+    interactive()->openSync(muse::UriQuery("audacity://playback/routing_matrix"));
 }
 
 void PlaybackController::setSelectionFollowsLoopRegion()
