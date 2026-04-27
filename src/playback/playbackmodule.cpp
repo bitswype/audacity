@@ -18,6 +18,7 @@
 #include "view/common/playbackmetermodel.h"
 #include "view/common/metermodel.h"
 #include "view/common/playbackroutingmodel.h"
+#include "view/common/recordingroutingmodel.h"
 #include "view/panels/playbackmeterpanelmodel.h"
 
 #include "playbackmodule.h"
@@ -60,6 +61,7 @@ void PlaybackModule::registerUiTypes()
     qmlRegisterType<PlaybackMeterModel>("Audacity.Playback", 1, 0, "PlaybackMeterModel");
     qmlRegisterType<MeterModel>("Audacity.Playback", 1, 0, "MeterModel");
     qmlRegisterType<PlaybackRoutingModel>("Audacity.Playback", 1, 0, "PlaybackRoutingModel");
+    qmlRegisterType<RecordingRoutingModel>("Audacity.Playback", 1, 0, "RecordingRoutingModel");
     qmlRegisterUncreatableType<TracksBehaviors>("Audacity.Playback", 1, 0, "SoloBehavior", "Not creatable from QML");
     qmlRegisterUncreatableType<PlaybackQualityPrefs>("Audacity.Playback", 1, 0, "PlaybackQuality", "Not creatable from QML");
     qmlRegisterUncreatableType<DitherTypePrefs>("Audacity.Playback", 1, 0, "DitherType", "Not creatable from QML");
@@ -75,6 +77,7 @@ void PlaybackModule::resolveImports()
     if (ir) {
         ir->registerQmlUri(muse::Uri("audacity://playback/loop_region_in_out"), "Audacity/Playback/dialogs/LoopRegionInOut.qml");
         ir->registerQmlUri(muse::Uri("audacity://playback/routing_matrix"), "Audacity/Playback/dialogs/PlaybackRoutingMatrixDialog.qml");
+        ir->registerQmlUri(muse::Uri("audacity://playback/recording_routing_matrix"), "Audacity/Playback/dialogs/RecordingRoutingMatrixDialog.qml");
     }
 }
 

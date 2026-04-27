@@ -12,3 +12,4 @@ PlaybackMeterPanel 1.0 panels/PlaybackMeterPanel.qml
 
 LoopRegionInOut 1.0 dialogs/LoopRegionInOut.qml
 PlaybackRoutingMatrixDialog 1.0 dialogs/PlaybackRoutingMatrixDialog.qml
+RecordingRoutingMatrixDialog 1.0 dialogs/RecordingRoutingMatrixDialog.qml

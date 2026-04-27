@@ -10,5 +10,6 @@
         <file>qml/Audacity/Playback/panels/PlaybackMeterPanel.qml</file>
         <file>qml/Audacity/Playback/dialogs/LoopRegionInOut.qml</file>
         <file>qml/Audacity/Playback/dialogs/PlaybackRoutingMatrixDialog.qml</file>
+        <file>qml/Audacity/Playback/dialogs/RecordingRoutingMatrixDialog.qml</file>
     </qresource>
 </RCC>

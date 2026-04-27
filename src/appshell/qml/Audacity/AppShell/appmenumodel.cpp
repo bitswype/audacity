@@ -350,6 +350,7 @@ MenuItem* AppMenuModel::makeTracksMenu()
         makeMenu(TranslatableString("appshell/menu/sort", "Sort tracks"), makeSortItems(), "menu-sort", false),
         makeSeparator(),
         makeMenuItem("playback-routing-matrix"),
+        makeMenuItem("recording-routing-matrix"),
     };
 
     return makeMenu(TranslatableString("appshell/menu/tracks", "&Tracks"), tracksItems, "menu-tracks");
